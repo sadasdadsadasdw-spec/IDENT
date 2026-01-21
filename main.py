@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.config.config_manager_v2 import get_config, ConfigValidationError
 from src.logger.custom_logger_v2 import get_logger
 from src.database.ident_connector_v2 import IdentConnector
-from src.bitrix24.api_client import Bitrix24Client, Bitrix24Error
+from src.bitrix.api_client import Bitrix24Client, Bitrix24Error
 from src.transformer.data_transformer import DataTransformer
 from src.queue.queue_manager import PersistentQueue
 
@@ -120,13 +120,58 @@ class SyncOrchestrator:
             'last_sync_records': 0
         }
 
-        # Время последней синхронизации
-        self.last_sync_time: Optional[datetime] = None
+        # Время последней синхронизации (загружаем из файла)
+        self.sync_state_file = Path("sync_state.json")
+        self.last_sync_time: Optional[datetime] = self._load_last_sync_time()
 
         # Флаг остановки
         self.should_stop = False
 
         logger.info("✅ Инициализация завершена успешно")
+
+    def _load_last_sync_time(self) -> Optional[datetime]:
+        """Загружает время последней синхронизации из файла"""
+        if not self.sync_state_file.exists():
+            logger.info("Файл состояния синхронизации не найден, начинаем с нуля")
+            return None
+
+        try:
+            import json
+            with open(self.sync_state_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                last_sync_str = data.get('last_sync_time')
+                if last_sync_str:
+                    last_sync = datetime.fromisoformat(last_sync_str)
+                    logger.info(f"Загружено время последней синхронизации: {last_sync}")
+                    return last_sync
+        except Exception as e:
+            logger.warning(f"Ошибка загрузки состояния синхронизации: {e}")
+
+        return None
+
+    def _save_last_sync_time(self):
+        """Сохраняет время последней синхронизации в файл"""
+        if not self.last_sync_time:
+            return
+
+        try:
+            import json
+            data = {
+                'last_sync_time': self.last_sync_time.isoformat(),
+                'filial_id': self.filial_id,
+                'updated_at': datetime.now().isoformat()
+            }
+
+            # Атомарная запись через временный файл
+            temp_file = self.sync_state_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            temp_file.replace(self.sync_state_file)
+            logger.debug(f"Сохранено время последней синхронизации: {self.last_sync_time}")
+
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния синхронизации: {e}")
 
     def test_connections(self) -> bool:
         """
@@ -208,10 +253,24 @@ class SyncOrchestrator:
 
             if existing_deal:
                 deal_id = int(existing_deal['ID'])
+                current_stage = existing_deal.get('STAGE_ID')
 
                 if self.enable_update_existing:
-                    logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
-                    self.b24.update_deal(deal_id, deal_data)
+                    # Проверяем защищенные стадии
+                    from src.transformer.data_transformer import StageMapper
+
+                    if current_stage in StageMapper.PROTECTED_STAGES:
+                        logger.info(
+                            f"Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
+                            f"- обновляем только данные, стадию не меняем"
+                        )
+                        # Убираем stage_id из обновления
+                        deal_data_copy = deal_data.copy()
+                        deal_data_copy.pop('stage_id', None)
+                        self.b24.update_deal(deal_id, deal_data_copy)
+                    else:
+                        logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
+                        self.b24.update_deal(deal_id, deal_data)
                 else:
                     logger.debug(f"Сделка {deal_id} уже существует, обновление отключено")
             else:
@@ -293,6 +352,7 @@ class SyncOrchestrator:
 
             # Обновляем время последней синхронизации
             self.last_sync_time = datetime.now()
+            self._save_last_sync_time()  # Сохраняем в файл
 
             # Статистика
             sync_duration = time.time() - sync_start

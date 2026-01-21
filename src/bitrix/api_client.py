@@ -12,6 +12,7 @@
 
 import time
 import logging
+import threading
 import requests
 from typing import Dict, Any, Optional, List, Tuple
 from functools import wraps
@@ -98,7 +99,7 @@ class RateLimiter:
 
         self.last_request_time = 0
         self.requests_this_minute: List[float] = []
-        self.lock = __import__('threading').Lock()
+        self.lock = threading.Lock()
 
     def wait_if_needed(self):
         """Ожидает если нужно соблюсти rate limit"""
@@ -427,18 +428,20 @@ class Bitrix24Client:
                 'CURRENCY_ID': deal_data.get('currency_id', 'RUB'),
                 'COMMENTS': deal_data.get('comments', ''),
 
-                # Кастомные поля
+                # Кастомные поля (актуальные ID из Bitrix24)
+                'UF_CRM_1769008900': deal_data.get('UF_CRM_1769008900'),  # Дата начало приема
+                'UF_CRM_1769008947': deal_data.get('UF_CRM_1769008947'),  # Дата окончания приема
+                'UF_CRM_1769008996': deal_data.get('UF_CRM_1769008996'),  # Врач
+                'UF_CRM_1769009098': deal_data.get('UF_CRM_1769009098'),  # Услуги
+
+                # Дополнительные поля (для внутреннего использования)
                 'UF_CRM_IDENT_ID': deal_data.get('uf_crm_ident_id'),
                 'UF_CRM_FILIAL': deal_data.get('uf_crm_filial'),
-                'UF_CRM_RECEPTION_START': deal_data.get('uf_crm_reception_start'),
-                'UF_CRM_RECEPTION_END': deal_data.get('uf_crm_reception_end'),
-                'UF_CRM_DOCTOR_NAME': deal_data.get('uf_crm_doctor_name'),
-                'UF_CRM_DOCTOR_SPECIALITY': deal_data.get('uf_crm_doctor_speciality'),
-                'UF_CRM_SERVICES': deal_data.get('uf_crm_services'),
                 'UF_CRM_ARMCHAIR': deal_data.get('uf_crm_armchair'),
                 'UF_CRM_STATUS': deal_data.get('uf_crm_status'),
                 'UF_CRM_CARD_NUMBER': deal_data.get('uf_crm_card_number'),
                 'UF_CRM_ORDER_DATE': deal_data.get('uf_crm_order_date'),
+                'UF_CRM_DOCTOR_SPECIALITY': deal_data.get('uf_crm_doctor_speciality'),
             }
 
             # Удаляем None значения
@@ -478,11 +481,11 @@ class Bitrix24Client:
                 'OPPORTUNITY': deal_data.get('opportunity'),
                 'COMMENTS': deal_data.get('comments'),
 
-                # Кастомные поля
-                'UF_CRM_RECEPTION_START': deal_data.get('uf_crm_reception_start'),
-                'UF_CRM_RECEPTION_END': deal_data.get('uf_crm_reception_end'),
-                'UF_CRM_DOCTOR_NAME': deal_data.get('uf_crm_doctor_name'),
-                'UF_CRM_SERVICES': deal_data.get('uf_crm_services'),
+                # Кастомные поля (актуальные ID из Bitrix24)
+                'UF_CRM_1769008900': deal_data.get('UF_CRM_1769008900'),  # Дата начало приема
+                'UF_CRM_1769008947': deal_data.get('UF_CRM_1769008947'),  # Дата окончания приема
+                'UF_CRM_1769008996': deal_data.get('UF_CRM_1769008996'),  # Врач
+                'UF_CRM_1769009098': deal_data.get('UF_CRM_1769009098'),  # Услуги
                 'UF_CRM_STATUS': deal_data.get('uf_crm_status'),
             }
 
