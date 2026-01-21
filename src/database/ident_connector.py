@@ -89,100 +89,99 @@ class IdentConnector:
 
         query = """
         SELECT TOP (?)
-            -- ID записи
+            -- Данные записи
             r.ID AS ReceptionID,
+            r.PlanStart AS StartTime,
+            r.PlanEnd AS EndTime,
 
-            -- Временные данные записи
-            r.DateTimeStartAppointment AS StartTime,
-            r.DateTimeEndAppointment AS EndTime,
-            r.DateTimeAdded AS CreatedAt,
+            -- Пациент
+            p.Surname + ' ' + p.Name + ISNULL(' ' + p.Patronymic, '') AS PatientFullName,
+            p.Surname AS PatientSurname,
+            p.Name AS PatientName,
+            p.Patronymic AS PatientPatronymic,
+            pat.CardNumber AS CardNumber,
+            p.MobilePhone AS PatientPhone,
+
+            -- Врач
+            ps.Surname + ' ' + ps.Name + ISNULL(' ' + ps.Patronymic, '') AS DoctorFullName,
+            ps.Surname AS DoctorSurname,
+            ps.Name AS DoctorName,
+            ps.Patronymic AS DoctorPatronymic,
+            pn.NameProfession AS Speciality,
+
+            -- Филиал и кабинет
+            COALESCE(oc_order.Name, oc_armchair.Name, 'Не указан') AS Filial,
+            a.NameArmchair AS Armchair,
+
+            -- Агрегированные услуги (через STRING_AGG)
+            (
+                SELECT STRING_AGG(si.Name, ', ') WITHIN GROUP (ORDER BY si.Name)
+                FROM OrderServiceRelation osr_agg
+                INNER JOIN ServiceItemPrices sip_agg ON osr_agg.ID_ServicePrices = sip_agg.ID
+                INNER JOIN ServiceItems si ON sip_agg.ID_ServiceItems = si.ID
+                WHERE osr_agg.ID_Orders = o.ID
+            ) AS Services,
+
+            -- Общая сумма заказа
+            (
+                SELECT ISNULL(SUM(osr_agg.CountService * sip_agg.Price - ISNULL(osr_agg.DiscountSum, 0)), 0)
+                FROM OrderServiceRelation osr_agg
+                INNER JOIN ServiceItemPrices sip_agg ON osr_agg.ID_ServicePrices = sip_agg.ID
+                WHERE osr_agg.ID_Orders = o.ID
+            ) AS TotalAmount,
+
+            -- Статус
+            CASE
+                WHEN r.ReceptionCanceled IS NOT NULL THEN 'Отменен'
+                WHEN r.CheckIssued IS NOT NULL THEN 'Завершен (счет выдан)'
+                WHEN r.ReceptionEnded IS NOT NULL THEN 'Завершен'
+                WHEN r.ReceptionStarted IS NOT NULL THEN 'В процессе'
+                WHEN r.PatientAppeared IS NOT NULL THEN 'Пациент пришел'
+                ELSE 'Запланирован'
+            END AS Status,
+
+            -- Временные метки
             r.PatientAppeared AS PatientAppeared,
             r.ReceptionStarted AS ReceptionStarted,
             r.ReceptionEnded AS ReceptionEnded,
             r.ReceptionCanceled AS ReceptionCanceled,
             r.CheckIssued AS CheckIssued,
 
-            -- Данные пациента
-            p.ID AS PatientID,
-            p.MedCardNumber AS CardNumber,
-            p.Surname AS PatientSurname,
-            p.Name AS PatientName,
-            p.Patronymic AS PatientPatronymic,
-            COALESCE(pc1.Value, pc2.Value, pc3.Value) AS PatientPhone,
+            -- Даты заказа
+            o.DateTimeOrder AS OrderDate,
+            o.DateTimeBillFormed AS BillFormedDate,
 
-            -- Данные врача
-            d.Surname AS DoctorSurname,
-            d.Name AS DoctorName,
-            d.Patronymic AS DoctorPatronymic,
-            s.Name AS Speciality,
+            -- Комментарий
+            r.Comment AS Comment,
 
-            -- Филиал и кабинет
-            COALESCE(oc_order.Name, oc_armchair.Name, 'Не указан') AS Filial,
-            a.Name AS Armchair,
-
-            -- Услуги (агрегированные)
-            (
-                SELECT STRING_AGG(si.Name, ', ') WITHIN GROUP (ORDER BY osr.ID)
-                FROM OrderServiceRelation osr
-                INNER JOIN ServiceItemPrices sip ON osr.ID_ServicePrices = sip.ID
-                INNER JOIN ServiceItems si ON sip.ID_ServiceItems = si.ID
-                WHERE osr.ID_Orders = o.ID AND osr.IsDeleted = 0
-            ) AS Services,
-
-            -- Сумма
-            (
-                SELECT ISNULL(SUM(osr.CountService * sip.Price - ISNULL(osr.DiscountSum, 0)), 0)
-                FROM OrderServiceRelation osr
-                INNER JOIN ServiceItemPrices sip ON osr.ID_ServicePrices = sip.ID
-                WHERE osr.ID_Orders = o.ID AND osr.IsDeleted = 0
-            ) AS TotalAmount,
-
-            -- Комментарий и причина отмены
-            r.Commentt AS Comment,
-            r.ReasonCancellation AS CancelReason,
-
-            -- Источник записи
-            rs.Name AS ReceptionSource
+            -- Метки времени для инкрементальной синхронизации
+            r.DateTimeAdded AS CreatedAt,
+            r.DateTimeChanged AS ChangedAt
 
         FROM Receptions r
+            -- Пациент
+            INNER JOIN Patients pat ON r.ID_Patients = pat.ID_Persons
+            INNER JOIN Persons p ON pat.ID_Persons = p.ID
 
-        -- Пациент
-        INNER JOIN Patients p ON r.ID_Patients = p.ID
+            -- Врач
+            LEFT JOIN Staffs s ON r.ID_Staffs = s.ID_Persons
+            LEFT JOIN Persons ps ON s.ID_Persons = ps.ID
+            LEFT JOIN Items i ON s.ID_Persons = i.ID_Staffs
+            LEFT JOIN ProfessionNames pn ON i.ID_ProfessionNames = pn.ID
 
-        -- Телефоны пациента (приоритет: мобильный, рабочий, домашний)
-        LEFT JOIN PatientContacts pc1 ON p.ID = pc1.ID_Patients
-            AND pc1.ID_ContactTypes = 1 AND pc1.IsDeleted = 0  -- Мобильный
-        LEFT JOIN PatientContacts pc2 ON p.ID = pc2.ID_Patients
-            AND pc2.ID_ContactTypes = 2 AND pc2.IsDeleted = 0  -- Рабочий
-        LEFT JOIN PatientContacts pc3 ON p.ID = pc3.ID_Patients
-            AND pc3.ID_ContactTypes = 3 AND pc3.IsDeleted = 0  -- Домашний
+            -- Филиал через кабинет
+            LEFT JOIN Armchairs a ON r.ID_Armchairs = a.ID
+            LEFT JOIN OwnCompanies oc_armchair ON a.ID_OwnCompanies = oc_armchair.ID
 
-        -- Врач
-        INNER JOIN Doctors d ON r.ID_Doctors = d.ID
-        INNER JOIN Specialities s ON d.ID_Specialities = s.ID
+            -- Заказы
+            LEFT JOIN Orders o ON r.ID = o.ID_Receptions
 
-        -- Кабинет
-        LEFT JOIN Armchairs a ON r.ID_Armchairs = a.ID
-
-        -- Филиал через кабинет
-        LEFT JOIN OwnCompanies oc_armchair ON a.ID_OwnCompanies = oc_armchair.ID
-
-        -- Заказ
-        LEFT JOIN Orders o ON r.ID = o.ID_Receptions
-
-        -- Филиал через заказ
-        LEFT JOIN OwnCompanies oc_order ON o.ID_OwnCompanies = oc_order.ID
-
-        -- Источник записи
-        LEFT JOIN ReceptionSources rs ON r.ID_ReceptionSources = rs.ID
+            -- Филиал через заказ
+            LEFT JOIN OwnCompanies oc_order ON o.ID_OwnCompanies = oc_order.ID
 
         WHERE
-            -- Только не удаленные записи
-            r.IsDeleted = 0
-            AND p.IsDeleted = 0
-
-            -- Инкрементальная выборка
-            AND (
+            -- Инкрементальная выборка: записи созданные или измененные после last_sync_time
+            (
                 r.DateTimeAdded > ?
                 OR r.DateTimeChanged > ?
                 OR r.PatientAppeared > ?
@@ -191,7 +190,7 @@ class IdentConnector:
                 OR r.ReceptionCanceled > ?
             )
 
-        ORDER BY r.DateTimeAdded DESC, r.ID DESC
+        ORDER BY r.PlanStart DESC, r.ID DESC
         """
 
         try:
@@ -238,58 +237,85 @@ class IdentConnector:
 
         query = """
         SELECT
-            -- План лечения
+            -- ПЛАН (основная информация)
             tp.ID AS PlanID,
             tp.Name AS PlanName,
-            tp.DateCreating AS CreatedAt,
+            tp.DateTimeCreated AS CreatedAt,
+            tp.IsActive AS IsActive,
 
-            -- Пациент
+            -- ПАЦИЕНТ
             p.Surname + ' ' + p.Name + ISNULL(' ' + p.Patronymic, '') AS PatientFullName,
+            pat.CardNumber AS CardNumber,
 
-            -- Врач
-            d.Surname + ' ' + d.Name + ISNULL(' ' + d.Patronymic, '') AS DoctorFullName,
+            -- ВРАЧ из плана (исполнитель)
+            ps_plan.Surname + ' ' + ps_plan.Name + ISNULL(' ' + ps_plan.Patronymic, '') AS DoctorFullName,
+            pn_plan.NameProfession AS DoctorSpeciality,
 
-            -- Этап
+            -- ЭТАПЫ плана
+            tps.ID AS StageID,
             tps.Name AS StageName,
-            tps.OrderNumber AS StageOrder,
+            tps.[Order] AS StageOrder,
 
-            -- Элемент плана
-            tpi.Name AS ItemName,
+            -- ЭЛЕМЕНТЫ плана
+            tpe.ID AS ElementID,
+            tpe.Name AS ElementName,
+            tpe.[Order] AS ElementOrder,
 
-            -- Услуга
+            -- УСЛУГИ
+            si.ID AS ServiceID,
             si.Name AS ServiceName,
-            tpisi.CountTooth AS ToothCount,
+            sc.Name AS ServiceCategory,
+            sf.Name AS ServiceFolder,
 
-            -- Статус
-            tpisi.StatusDone AS StatusDone,
-
-            -- Цена и скидка
+            -- ЦЕНЫ и СКИДКИ
             sip.Price AS Price,
-            tpisi.DiscountSum AS DiscountAmount,
-            (tpisi.CountTooth * sip.Price - ISNULL(tpisi.DiscountSum, 0)) AS TotalAmount
+            tper.DiscountSum AS DiscountAmount,
+            (sip.Price - ISNULL(tper.DiscountSum, 0)) AS TotalAmount,
+
+            -- ЗУБЫ
+            tper.TeethLong AS TeethMask,
+
+            -- СТАТУС ВЫПОЛНЕНИЯ (связь с заказами)
+            CASE
+                WHEN osr.ID IS NOT NULL AND o.DateTimeBillFormed IS NOT NULL THEN 'Выполнено и оплачено'
+                WHEN osr.ID IS NOT NULL THEN 'Выполнено'
+                ELSE 'Не выполнено'
+            END AS Status,
+
+            -- Детали выполнения
+            o.ID AS OrderID,
+            o.DateTimeOrder AS ExecutionDate,
+            r.ID AS ReceptionID,
+            r.PlanStart AS ReceptionDate
 
         FROM TreatmentPlans tp
+            -- Пациент
+            INNER JOIN Patients pat ON tp.ID_Patients = pat.ID_Persons
+            INNER JOIN Persons p ON pat.ID_Persons = p.ID
 
-        -- Пациент
-        INNER JOIN Patients p ON tp.ID_Patients = p.ID
+            -- Врач из плана (исполнитель)
+            LEFT JOIN Staffs s_plan ON tp.ID_Staffs = s_plan.ID_Persons
+            LEFT JOIN Persons ps_plan ON s_plan.ID_Persons = ps_plan.ID
+            LEFT JOIN Items i_plan ON s_plan.ID_Persons = i_plan.ID_Staffs
+            LEFT JOIN ProfessionNames pn_plan ON i_plan.ID_ProfessionNames = pn_plan.ID
 
-        -- Врач
-        INNER JOIN Doctors d ON tp.ID_Doctors = d.ID
+            -- Элементы плана
+            LEFT JOIN TreatmentPlanElementRelations tper ON tp.ID = tper.ID_TreatmentPlans
+            LEFT JOIN TreatmentPlanStages tps ON tper.ID_TreatmentPlanStages = tps.ID
+            LEFT JOIN TreatmentPlanElements tpe ON tper.ID_TreatmentPlanElements = tpe.ID
 
-        -- Этапы плана
-        INNER JOIN TreatmentPlanStages tps ON tp.ID = tps.ID_TreatmentPlans
+            -- Услуги
+            LEFT JOIN ServiceItemPrices sip ON tper.ID_ServicePrices = sip.ID
+            LEFT JOIN ServiceItems si ON sip.ID_ServiceItems = si.ID
+            LEFT JOIN ServiceItemContents sic ON si.ID = sic.ID_ServiceItems
+                AND sic.DateTimeTo IS NULL
+            LEFT JOIN ServiceFolders sf ON sic.ID_ServiceFoldersParent = sf.ID
+            LEFT JOIN ServiceCategories sc ON sf.ID_ServiceCategories = sc.ID
 
-        -- Элементы этапа
-        INNER JOIN TreatmentPlanItems tpi ON tps.ID = tpi.ID_TreatmentPlanStages
-
-        -- Услуги в элементе
-        INNER JOIN TreatmentPlanItemServiceItems tpisi ON tpi.ID = tpisi.ID_TreatmentPlanItems
-
-        -- Прайс услуги
-        INNER JOIN ServiceItemPrices sip ON tpisi.ID_ServiceItemPrices = sip.ID
-
-        -- Услуга
-        INNER JOIN ServiceItems si ON sip.ID_ServiceItems = si.ID
+            -- Связь с выполнением (заказы)
+            LEFT JOIN OrderServiceRelation osr ON tper.ID = osr.ID_TreatmentPlanElementRelations
+            LEFT JOIN Orders o ON osr.ID_Orders = o.ID
+            LEFT JOIN Receptions r ON o.ID_Receptions = r.ID
 
         WHERE
             -- Фильтр по пациенту
@@ -297,18 +323,11 @@ class IdentConnector:
             AND p.Name = ?
             AND (? = '' OR p.Patronymic = ?)
 
-            -- Только не удаленные
-            AND tp.IsDeleted = 0
-            AND p.IsDeleted = 0
-            AND tps.IsDeleted = 0
-            AND tpi.IsDeleted = 0
-            AND tpisi.IsDeleted = 0
-
         ORDER BY
-            tp.DateCreating DESC,
-            tps.OrderNumber,
-            tpi.ID,
-            tpisi.ID
+            tp.DateTimeCreated DESC,
+            tps.[Order],
+            tpe.[Order],
+            si.Name
         """
 
         try:
@@ -342,67 +361,94 @@ class IdentConnector:
         """
         query = """
         SELECT
-            -- План лечения
+            -- ПЛАН (основная информация)
             tp.ID AS PlanID,
             tp.Name AS PlanName,
-            tp.DateCreating AS CreatedAt,
+            tp.DateTimeCreated AS CreatedAt,
+            tp.IsActive AS IsActive,
 
-            -- Пациент
+            -- ПАЦИЕНТ
             p.Surname + ' ' + p.Name + ISNULL(' ' + p.Patronymic, '') AS PatientFullName,
+            pat.CardNumber AS CardNumber,
 
-            -- Врач
-            d.Surname + ' ' + d.Name + ISNULL(' ' + d.Patronymic, '') AS DoctorFullName,
+            -- ВРАЧ из плана (исполнитель)
+            ps_plan.Surname + ' ' + ps_plan.Name + ISNULL(' ' + ps_plan.Patronymic, '') AS DoctorFullName,
+            pn_plan.NameProfession AS DoctorSpeciality,
 
-            -- Этап
+            -- ЭТАПЫ плана
+            tps.ID AS StageID,
             tps.Name AS StageName,
-            tps.OrderNumber AS StageOrder,
+            tps.[Order] AS StageOrder,
 
-            -- Элемент плана
-            tpi.Name AS ItemName,
+            -- ЭЛЕМЕНТЫ плана
+            tpe.ID AS ElementID,
+            tpe.Name AS ElementName,
+            tpe.[Order] AS ElementOrder,
 
-            -- Услуга
+            -- УСЛУГИ
+            si.ID AS ServiceID,
             si.Name AS ServiceName,
-            tpisi.CountTooth AS ToothCount,
+            sc.Name AS ServiceCategory,
+            sf.Name AS ServiceFolder,
 
-            -- Статус
-            tpisi.StatusDone AS StatusDone,
-
-            -- Цена и скидка
+            -- ЦЕНЫ и СКИДКИ
             sip.Price AS Price,
-            tpisi.DiscountSum AS DiscountAmount,
-            (tpisi.CountTooth * sip.Price - ISNULL(tpisi.DiscountSum, 0)) AS TotalAmount
+            tper.DiscountSum AS DiscountAmount,
+            (sip.Price - ISNULL(tper.DiscountSum, 0)) AS TotalAmount,
+
+            -- ЗУБЫ
+            tper.TeethLong AS TeethMask,
+
+            -- СТАТУС ВЫПОЛНЕНИЯ (связь с заказами)
+            CASE
+                WHEN osr.ID IS NOT NULL AND o.DateTimeBillFormed IS NOT NULL THEN 'Выполнено и оплачено'
+                WHEN osr.ID IS NOT NULL THEN 'Выполнено'
+                ELSE 'Не выполнено'
+            END AS Status,
+
+            -- Детали выполнения
+            o.ID AS OrderID,
+            o.DateTimeOrder AS ExecutionDate,
+            r.ID AS ReceptionID,
+            r.PlanStart AS ReceptionDate
 
         FROM TreatmentPlans tp
+            -- Пациент
+            INNER JOIN Patients pat ON tp.ID_Patients = pat.ID_Persons
+            INNER JOIN Persons p ON pat.ID_Persons = p.ID
 
-        -- Пациент
-        INNER JOIN Patients p ON tp.ID_Patients = p.ID
+            -- Врач из плана (исполнитель)
+            LEFT JOIN Staffs s_plan ON tp.ID_Staffs = s_plan.ID_Persons
+            LEFT JOIN Persons ps_plan ON s_plan.ID_Persons = ps_plan.ID
+            LEFT JOIN Items i_plan ON s_plan.ID_Persons = i_plan.ID_Staffs
+            LEFT JOIN ProfessionNames pn_plan ON i_plan.ID_ProfessionNames = pn_plan.ID
 
-        -- Врач
-        INNER JOIN Doctors d ON tp.ID_Doctors = d.ID
+            -- Элементы плана
+            LEFT JOIN TreatmentPlanElementRelations tper ON tp.ID = tper.ID_TreatmentPlans
+            LEFT JOIN TreatmentPlanStages tps ON tper.ID_TreatmentPlanStages = tps.ID
+            LEFT JOIN TreatmentPlanElements tpe ON tper.ID_TreatmentPlanElements = tpe.ID
 
-        -- Этапы плана
-        INNER JOIN TreatmentPlanStages tps ON tp.ID = tps.ID_TreatmentPlans
+            -- Услуги
+            LEFT JOIN ServiceItemPrices sip ON tper.ID_ServicePrices = sip.ID
+            LEFT JOIN ServiceItems si ON sip.ID_ServiceItems = si.ID
+            LEFT JOIN ServiceItemContents sic ON si.ID = sic.ID_ServiceItems
+                AND sic.DateTimeTo IS NULL
+            LEFT JOIN ServiceFolders sf ON sic.ID_ServiceFoldersParent = sf.ID
+            LEFT JOIN ServiceCategories sc ON sf.ID_ServiceCategories = sc.ID
 
-        -- Элементы этапа
-        INNER JOIN TreatmentPlanItems tpi ON tps.ID = tpi.ID_TreatmentPlanStages
-
-        -- Услуги в элементе
-        INNER JOIN TreatmentPlanItemServiceItems tpisi ON tpi.ID = tpisi.ID_TreatmentPlanItems
-
-        -- Прайс услуги
-        INNER JOIN ServiceItemPrices sip ON tpisi.ID_ServiceItemPrices = sip.ID
-
-        -- Услуга
-        INNER JOIN ServiceItems si ON sip.ID_ServiceItems = si.ID
+            -- Связь с выполнением (заказы)
+            LEFT JOIN OrderServiceRelation osr ON tper.ID = osr.ID_TreatmentPlanElementRelations
+            LEFT JOIN Orders o ON osr.ID_Orders = o.ID
+            LEFT JOIN Receptions r ON o.ID_Receptions = r.ID
 
         WHERE
             tp.ID = ?
-            AND tp.IsDeleted = 0
 
         ORDER BY
-            tps.OrderNumber,
-            tpi.ID,
-            tpisi.ID
+            tps.[Order],
+            tpe.[Order],
+            si.Name,
+            o.DateTimeOrder
         """
 
         try:
@@ -423,7 +469,7 @@ class IdentConnector:
 
     def check_plan_exists(self, plan_id: int) -> bool:
         """Проверяет существование плана лечения"""
-        query = "SELECT COUNT(*) FROM TreatmentPlans WHERE ID = ? AND IsDeleted = 0"
+        query = "SELECT COUNT(*) FROM TreatmentPlans WHERE ID = ?"
 
         try:
             with self.get_connection() as conn:
@@ -438,18 +484,16 @@ class IdentConnector:
     def get_statistics(self) -> Dict[str, int]:
         """Возвращает статистику БД"""
         queries = {
-            'total_receptions': "SELECT COUNT(*) FROM Receptions WHERE IsDeleted = 0",
-            'total_patients': "SELECT COUNT(*) FROM Patients WHERE IsDeleted = 0",
-            'total_treatment_plans': "SELECT COUNT(*) FROM TreatmentPlans WHERE IsDeleted = 0",
+            'total_receptions': "SELECT COUNT(*) FROM Receptions",
+            'total_patients': "SELECT COUNT(*) FROM Patients",
+            'total_treatment_plans': "SELECT COUNT(*) FROM TreatmentPlans",
             'receptions_today': """
                 SELECT COUNT(*) FROM Receptions
-                WHERE CAST(DateTimeStartAppointment AS DATE) = CAST(GETDATE() AS DATE)
-                AND IsDeleted = 0
+                WHERE CAST(PlanStart AS DATE) = CAST(GETDATE() AS DATE)
             """,
             'receptions_this_week': """
                 SELECT COUNT(*) FROM Receptions
-                WHERE DateTimeStartAppointment >= DATEADD(WEEK, DATEDIFF(WEEK, 0, GETDATE()), 0)
-                AND IsDeleted = 0
+                WHERE PlanStart >= DATEADD(WEEK, DATEDIFF(WEEK, 0, GETDATE()), 0)
             """
         }
 
