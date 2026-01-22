@@ -242,17 +242,17 @@ class SyncOrchestrator:
                 existing_lead = self.b24.find_lead_by_phone(phone)
 
                 if existing_lead:
-                    # Конвертируем лид в контакт
-                    logger.info(f"Найден лид {existing_lead['ID']}, конвертируем...")
-                    contact_id, _ = self.b24.convert_lead(int(existing_lead['ID']))
+                    # Лид найден - создаем контакт из наших данных
+                    # (в будущем можно добавить привязку к лиду)
+                    logger.info(f"Найден лид ID={existing_lead['ID']} для телефона {phone[:10]}...")
+                    logger.info(f"Создаем контакт вместо конвертации лида")
+                    contact_id = self.b24.create_contact(contact_data)
                 else:
                     # Создаем новый контакт
                     contact_id = self.b24.create_contact(contact_data)
 
             # 2. Создаем/обновляем сделку
-            # ВРЕМЕННО: отключаем поиск пока поле UF_CRM_IDENT_ID не создано в Bitrix24
-            # existing_deal = self.b24.find_deal_by_ident_id(unique_id)
-            existing_deal = None  # Всегда создаем новую сделку
+            existing_deal = self.b24.find_deal_by_ident_id(unique_id)
 
             if existing_deal:
                 deal_id = int(existing_deal['ID'])
