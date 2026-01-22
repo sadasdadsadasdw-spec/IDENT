@@ -242,10 +242,11 @@ class SyncOrchestrator:
                 existing_lead = self.b24.find_lead_by_phone(phone)
 
                 if existing_lead:
-                    # Лид найден - создаем контакт из наших данных
-                    # (в будущем можно добавить привязку к лиду)
+                    # Лид найден - переводим его в успешную стадию WON
                     logger.info(f"Найден лид ID={existing_lead['ID']} для телефона {phone[:10]}...")
-                    logger.info(f"Создаем контакт вместо конвертации лида")
+                    logger.info(f"Перемещаем лид в стадию CONVERTED (WON)")
+                    self.b24.update_lead_status(int(existing_lead['ID']), 'CONVERTED')
+                    # Создаем контакт из наших данных
                     contact_id = self.b24.create_contact(contact_data)
                 else:
                     # Создаем новый контакт
@@ -262,7 +263,7 @@ class SyncOrchestrator:
                     # Проверяем защищенные стадии
                     from src.transformer.data_transformer import StageMapper
 
-                    if current_stage in StageMapper.PROTECTED_STAGES:
+                    if StageMapper.is_stage_protected(current_stage):
                         logger.info(
                             f"Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
                             f"- обновляем только данные, стадию не меняем"
