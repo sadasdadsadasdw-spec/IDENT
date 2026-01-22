@@ -250,7 +250,9 @@ class SyncOrchestrator:
                     contact_id = self.b24.create_contact(contact_data)
 
             # 2. Создаем/обновляем сделку
-            existing_deal = self.b24.find_deal_by_ident_id(unique_id)
+            # ВРЕМЕННО: отключаем поиск пока поле UF_CRM_IDENT_ID не создано в Bitrix24
+            # existing_deal = self.b24.find_deal_by_ident_id(unique_id)
+            existing_deal = None  # Всегда создаем новую сделку
 
             if existing_deal:
                 deal_id = int(existing_deal['ID'])
