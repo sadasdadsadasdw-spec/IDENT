@@ -530,23 +530,35 @@ def main():
         orchestrator.run_scheduled(interval_minutes=interval_minutes)
 
     except KeyboardInterrupt:
-        logger.info("\nПрервано пользователем (Ctrl+C)")
+        if logger:
+            logger.info("\nПрервано пользователем (Ctrl+C)")
+        else:
+            print("\nПрервано пользователем (Ctrl+C)")
 
     except ConfigValidationError as e:
-        logger.error(f"\n❌ Ошибка конфигурации:\n{e}")
+        if logger:
+            logger.error(f"\n❌ Ошибка конфигурации:\n{e}")
+        else:
+            print(f"\n❌ Ошибка конфигурации:\n{e}")
         sys.exit(1)
 
     except Exception as e:
-        logger.error(f"\n❌ Критическая ошибка: {e}", exc_info=True)
+        if logger:
+            logger.error(f"\n❌ Критическая ошибка: {e}", exc_info=True)
+        else:
+            print(f"\n❌ Критическая ошибка: {e}")
+            import traceback
+            traceback.print_exc()
         sys.exit(1)
 
     finally:
         if orchestrator:
             orchestrator.cleanup()
 
-        logger.info("\n" + "=" * 80)
-        logger.info("ИНТЕГРАЦИЯ ОСТАНОВЛЕНА")
-        logger.info("=" * 80)
+        if logger:
+            logger.info("\n" + "=" * 80)
+            logger.info("ИНТЕГРАЦИЯ ОСТАНОВЛЕНА")
+            logger.info("=" * 80)
 
 
 if __name__ == "__main__":
