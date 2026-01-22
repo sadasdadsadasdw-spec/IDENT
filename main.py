@@ -28,7 +28,8 @@ from src.bitrix.api_client import Bitrix24Client, Bitrix24Error
 from src.transformer.data_transformer import DataTransformer
 from src.queue.queue_manager import PersistentQueue
 
-logger = logging.getLogger(__name__)
+# Глобальный logger (будет инициализирован в main())
+logger = None
 
 
 class SyncOrchestrator:
@@ -477,7 +478,7 @@ orchestrator = None
 
 def main():
     """Точка входа"""
-    global orchestrator
+    global orchestrator, logger
 
     try:
         # Инициализация логгера
