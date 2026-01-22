@@ -19,7 +19,9 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
 
-logger = logging.getLogger(__name__)
+# Используем настроенный logger из custom_logger_v2
+from src.logger.custom_logger_v2 import get_logger
+logger = get_logger('ident_integration')
 
 
 class QueueItemStatus(Enum):
