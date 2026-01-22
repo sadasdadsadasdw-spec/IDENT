@@ -270,15 +270,58 @@ class SyncOrchestrator:
                 deal_id = int(existing_deal['ID'])
                 current_stage = existing_deal.get('STAGE_ID')
 
-                # Проверяем финальную стадию - НЕ обновляем закрытые сделки
+                # Проверяем финальную стадию - создаем НОВУЮ сделку
                 from src.transformer.data_transformer import StageMapper
 
                 if StageMapper.is_stage_final(current_stage):
                     logger.info(
-                        f"⛔ Сделка {deal_id} в финальной стадии '{current_stage}' "
-                        f"(WON/LOSE) - пропускаем обновление"
+                        f"🔄 Сделка {deal_id} в финальной стадии '{current_stage}' "
+                        f"(WON/LOSE) - создаем новую сделку"
                     )
-                    return True
+
+                    # Генерируем новый unique_id с суффиксом (_2, _3, ...)
+                    base_unique_id = unique_id
+                    counter = 2
+                    while True:
+                        new_unique_id = f"{base_unique_id}_{counter}"
+                        check_deal = self.b24.find_deal_by_ident_id(new_unique_id)
+                        if not check_deal:
+                            # Свободный ID найден
+                            unique_id = new_unique_id
+                            deal_data['uf_crm_ident_id'] = new_unique_id
+                            logger.info(f"Новый unique_id: {new_unique_id}")
+                            break
+                        else:
+                            # Проверяем, не закрыта ли эта сделка тоже
+                            if not StageMapper.is_stage_final(check_deal.get('STAGE_ID')):
+                                # Найдена открытая сделка - обновляем её
+                                unique_id = new_unique_id
+                                deal_data['uf_crm_ident_id'] = new_unique_id
+                                existing_deal = check_deal
+                                deal_id = int(check_deal['ID'])
+                                current_stage = check_deal.get('STAGE_ID')
+                                logger.info(f"Найдена открытая сделка {deal_id} с ID {new_unique_id}")
+                                break
+                        counter += 1
+                        if counter > 100:  # Защита от бесконечного цикла
+                            logger.error(f"Не удалось найти свободный unique_id для {base_unique_id}")
+                            return False
+
+                    # Если нашли открытую сделку - обновляем, иначе создаем новую
+                    if existing_deal and not StageMapper.is_stage_final(existing_deal.get('STAGE_ID')):
+                        # Обновляем найденную открытую сделку
+                        pass  # Продолжаем выполнение ниже
+                    else:
+                        # Создаем новую сделку
+                        deal_id = self.b24.create_deal(deal_data, contact_id)
+                        logger.info(f"✨ Создана новая сделка {deal_id} для {unique_id} (старая сделка закрыта)")
+
+                        # Добавляем комментарий
+                        comment_text = deal_data.get('comments')
+                        if comment_text:
+                            self.b24.add_comment_to_deal(deal_id, comment_text)
+
+                        return True
 
                 if self.enable_update_existing:
                     # Проверяем защищенные стадии
