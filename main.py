@@ -242,10 +242,21 @@ class SyncOrchestrator:
                 existing_lead = self.b24.find_lead_by_phone(phone)
 
                 if existing_lead:
-                    # Лид найден - переводим его в успешную стадию WON
-                    logger.info(f"Найден лид ID={existing_lead['ID']} для телефона {phone[:10]}...")
-                    logger.info(f"Перемещаем лид в стадию CONVERTED (WON)")
-                    self.b24.update_lead_status(int(existing_lead['ID']), 'CONVERTED')
+                    lead_status = existing_lead.get('STATUS_ID', '')
+                    lead_id = int(existing_lead['ID'])
+
+                    # Проверяем статус лида - не трогаем финальные статусы
+                    if lead_status in ['CONVERTED', 'JUNK']:
+                        logger.info(
+                            f"⛔ Лид ID={lead_id} в финальном статусе '{lead_status}' "
+                            f"- пропускаем конвертацию"
+                        )
+                    else:
+                        # Лид найден и в рабочем статусе - переводим в CONVERTED
+                        logger.info(f"Найден лид ID={lead_id} (статус: {lead_status}) для телефона {phone[:10]}...")
+                        logger.info(f"Перемещаем лид в стадию CONVERTED")
+                        self.b24.update_lead_status(lead_id, 'CONVERTED')
+
                     # Создаем контакт из наших данных
                     contact_id = self.b24.create_contact(contact_data)
                 else:
@@ -259,28 +270,51 @@ class SyncOrchestrator:
                 deal_id = int(existing_deal['ID'])
                 current_stage = existing_deal.get('STAGE_ID')
 
+                # Проверяем финальную стадию - НЕ обновляем закрытые сделки
+                from src.transformer.data_transformer import StageMapper
+
+                if StageMapper.is_stage_final(current_stage):
+                    logger.info(
+                        f"⛔ Сделка {deal_id} в финальной стадии '{current_stage}' "
+                        f"(WON/LOSE) - пропускаем обновление"
+                    )
+                    return True
+
                 if self.enable_update_existing:
                     # Проверяем защищенные стадии
-                    from src.transformer.data_transformer import StageMapper
-
                     if StageMapper.is_stage_protected(current_stage):
                         logger.info(
-                            f"Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
+                            f"🔒 Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
                             f"- обновляем только данные, стадию не меняем"
                         )
                         # Убираем stage_id из обновления
                         deal_data_copy = deal_data.copy()
                         deal_data_copy.pop('stage_id', None)
                         self.b24.update_deal(deal_id, deal_data_copy)
+
+                        # Добавляем комментарий через Timeline API
+                        comment_text = deal_data.get('comments')
+                        if comment_text:
+                            self.b24.add_comment_to_deal(deal_id, comment_text)
                     else:
                         logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
                         self.b24.update_deal(deal_id, deal_data)
+
+                        # Добавляем комментарий через Timeline API
+                        comment_text = deal_data.get('comments')
+                        if comment_text:
+                            self.b24.add_comment_to_deal(deal_id, comment_text)
                 else:
                     logger.debug(f"Сделка {deal_id} уже существует, обновление отключено")
             else:
                 # Создаем новую сделку
                 deal_id = self.b24.create_deal(deal_data, contact_id)
                 logger.info(f"Создана сделка {deal_id} для {unique_id}")
+
+                # Добавляем комментарий через Timeline API
+                comment_text = deal_data.get('comments')
+                if comment_text:
+                    self.b24.add_comment_to_deal(deal_id, comment_text)
 
             return True
 
