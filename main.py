@@ -230,16 +230,23 @@ class SyncOrchestrator:
             # 1. Ищем/создаем контакт
             contact_id = None
             phone = contact_data['phone']
+            name = contact_data.get('name', '')
+            last_name = contact_data.get('last_name', '')
+            second_name = contact_data.get('second_name', '')
 
-            # Ищем контакт по телефону
-            existing_contact = self.b24.find_contact_by_phone(phone)
+            # Ищем контакт по телефону И ФИО (важно для семей с одним номером)
+            existing_contact = self.b24.find_contact_by_phone_and_name(
+                phone, name, last_name, second_name
+            )
 
             if existing_contact:
                 contact_id = int(existing_contact['ID'])
                 logger.debug(f"Найден существующий контакт: {contact_id}")
             else:
-                # Ищем лид
-                existing_lead = self.b24.find_lead_by_phone(phone)
+                # Ищем лид по телефону И ФИО
+                existing_lead = self.b24.find_lead_by_phone_and_name(
+                    phone, name, last_name
+                )
 
                 if existing_lead:
                     lead_status = existing_lead.get('STATUS_ID', '')
