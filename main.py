@@ -26,6 +26,7 @@ from src.logger.custom_logger_v2 import get_logger
 from src.database.ident_connector_v2 import IdentConnector
 from src.bitrix.api_client import Bitrix24Client, Bitrix24Error
 from src.transformer.data_transformer import DataTransformer
+from src.transformer.treatment_plan_handler import TreatmentPlanTransformer
 from src.queue.queue_manager import PersistentQueue
 
 # Глобальный logger (будет инициализирован в main())
@@ -369,6 +370,15 @@ class SyncOrchestrator:
                 if comment_text:
                     self.b24.add_comment_to_deal(deal_id, comment_text)
 
+            # Синхронизируем план лечения (если есть номер карты)
+            card_number = deal_data.get('UF_CRM_1769083581481') or deal_data.get('uf_crm_card_number')
+            if card_number and deal_id:
+                try:
+                    self.sync_treatment_plan(deal_id, card_number)
+                except Exception as e:
+                    logger.warning(f"Ошибка синхронизации плана лечения для сделки {deal_id}: {e}")
+                    # Не прерываем синхронизацию из-за ошибки плана лечения
+
             return True
 
         except Bitrix24Error as e:
@@ -376,6 +386,80 @@ class SyncOrchestrator:
             raise
         except Exception as e:
             logger.error(f"Неожиданная ошибка синхронизации {unique_id}: {e}", exc_info=True)
+            raise
+
+    def sync_treatment_plan(self, deal_id: int, card_number: str):
+        """
+        Синхронизирует план лечения для сделки
+
+        Args:
+            deal_id: ID сделки в Bitrix24
+            card_number: Номер карты пациента
+
+        Логика:
+            1. Получает план лечения из БД IDENT по CardNumber
+            2. Преобразует в компактный JSON
+            3. Вычисляет MD5 хеш
+            4. Сравнивает с существующим хешем в сделке
+            5. Обновляет только если изменился
+        """
+        try:
+            # Получаем сырые данные плана из БД
+            raw_plan_data = self.db.get_treatment_plans_by_card_number(card_number)
+
+            if not raw_plan_data:
+                logger.debug(f"План лечения не найден для карты {card_number}")
+                return
+
+            # Преобразуем в структурированный формат
+            plan = TreatmentPlanTransformer.transform_plan(raw_plan_data)
+
+            if not plan:
+                logger.warning(f"Не удалось преобразовать план лечения для карты {card_number}")
+                return
+
+            # Проверяем размер
+            is_valid, size_kb = TreatmentPlanTransformer.validate_size(plan)
+            if not is_valid:
+                logger.error(
+                    f"⚠️ План лечения превышает 60KB ({size_kb}KB) для карты {card_number} "
+                    f"- пропускаем синхронизацию"
+                )
+                return
+
+            # Вычисляем хеш нового плана
+            new_hash = TreatmentPlanTransformer.calculate_hash(plan)
+
+            # Получаем текущий хеш из сделки
+            current_plan_data = self.b24.get_deal_treatment_plan_data(deal_id)
+            current_hash = current_plan_data.get('hash', '') if current_plan_data else ''
+
+            # Проверяем нужно ли обновлять
+            if current_hash == new_hash:
+                logger.debug(
+                    f"План лечения для сделки {deal_id} не изменился "
+                    f"(hash={new_hash[:8]}...), пропускаем обновление"
+                )
+                return
+
+            # План изменился - обновляем
+            plan_json = TreatmentPlanTransformer.to_json_string(plan, minify=True)
+
+            update_data = {
+                'uf_crm_treatment_plan': plan_json,
+                'uf_crm_treatment_plan_hash': new_hash
+            }
+
+            self.b24.update_deal(deal_id, update_data)
+
+            logger.info(
+                f"✅ План лечения обновлен для сделки {deal_id}: "
+                f"план_id={plan['plan_id']}, услуг={plan['summary']['total_services']}, "
+                f"размер={size_kb}KB, hash={new_hash[:8]}..."
+            )
+
+        except Exception as e:
+            logger.error(f"Ошибка синхронизации плана лечения для сделки {deal_id}: {e}", exc_info=True)
             raise
 
     def sync_once(self):
