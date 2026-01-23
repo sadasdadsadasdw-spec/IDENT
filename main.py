@@ -326,7 +326,10 @@ class SyncOrchestrator:
                         # Добавляем комментарий
                         comment_text = deal_data.get('comments')
                         if comment_text:
+                            logger.info(f"📝 Добавление комментария к сделке {deal_id} (длина: {len(comment_text)} символов)")
                             self.b24.add_comment_to_deal(deal_id, comment_text)
+                        else:
+                            logger.warning(f"⚠️ Комментарий пустой для сделки {deal_id}")
 
                         return True
 
