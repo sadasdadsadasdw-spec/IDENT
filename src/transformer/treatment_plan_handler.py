@@ -86,6 +86,14 @@ class TreatmentPlanTransformer:
         status_counts = {'done_paid': 0, 'done': 0, 'pending': 0}
 
         for row in raw_data:
+            # КРИТИЧНО: Пропускаем строки из других планов (если SQL вернул несколько планов)
+            if row.get('PlanID') != plan_id:
+                logger.warning(
+                    f"Обнаружена строка из другого плана (PlanID={row.get('PlanID')}) "
+                    f"при обработке плана {plan_id}, пропускаем"
+                )
+                continue
+
             stage_id = row.get('StageID')
             element_id = row.get('ElementID')
             service_id = row.get('ServiceID')
@@ -166,6 +174,13 @@ class TreatmentPlanTransformer:
             'total_amount': float(total_amount),
             'completion_percent': round((status_counts['done_paid'] + status_counts['done']) / total_services * 100, 1) if total_services > 0 else 0
         }
+
+        # Логирование для пустых планов
+        if total_services == 0:
+            logger.info(
+                f"⚠️ План лечения ID={plan_id} пустой (нет услуг). "
+                f"Пациент: {first_row.get('PatientFullName')}, IsActive={plan['active']}"
+            )
 
         return plan
 

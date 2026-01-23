@@ -388,6 +388,11 @@ class SyncOrchestrator:
                 except Exception as e:
                     logger.warning(f"Ошибка синхронизации плана лечения для сделки {deal_id}: {e}")
                     # Не прерываем синхронизацию из-за ошибки плана лечения
+            elif deal_id and not card_number:
+                logger.debug(
+                    f"⚠️ CardNumber отсутствует для сделки {deal_id} ({unique_id}), "
+                    f"план лечения не синхронизирован"
+                )
 
             return True
 

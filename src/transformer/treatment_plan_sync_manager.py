@@ -209,6 +209,15 @@ class TreatmentPlanSyncManager:
         Returns:
             True если план был обновлен
         """
+        # Валидация параметров
+        if not deal_id or deal_id <= 0:
+            logger.error(f"Невалидный deal_id: {deal_id}")
+            return False
+
+        if not card_number or not str(card_number).strip():
+            logger.warning(f"Пустой card_number для сделки {deal_id}")
+            return False
+
         self.stats['total_checks'] += 1
 
         try:
@@ -259,6 +268,17 @@ class TreatmentPlanSyncManager:
 
             # План изменился или force - обновляем
             plan_json = TreatmentPlanTransformer.to_json_string(plan, minify=True)
+
+            # Валидация JSON перед сохранением
+            try:
+                json.loads(plan_json)  # Проверяем что JSON валидный
+            except json.JSONDecodeError as e:
+                logger.error(
+                    f"⚠️ Невалидный JSON для карты {card_number}: {e}. "
+                    f"План не будет сохранен."
+                )
+                self.stats['errors'] += 1
+                return False
 
             update_data = {
                 'uf_crm_treatment_plan': plan_json,
