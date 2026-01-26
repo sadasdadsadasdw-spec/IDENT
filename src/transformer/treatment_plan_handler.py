@@ -102,48 +102,56 @@ class TreatmentPlanTransformer:
             if not service_id:
                 continue
 
+            # Пропускаем строки без этапа
+            if not stage_id:
+                logger.warning(f"Услуга {service_id} без этапа (StageID=NULL) в плане {plan_id}")
+                continue
+
             # Заполняем информацию об этапе
-            if stage_id and stage_id not in stages_dict:
+            if stage_id not in stages_dict:
                 stages_dict[stage_id]['id'] = stage_id
                 stages_dict[stage_id]['name'] = row.get('StageName', '')
                 stages_dict[stage_id]['order'] = row.get('StageOrder', 0)
 
+            # ✅ ИСПРАВЛЕНИЕ: Если элемента нет, создаем виртуальный элемент = этапу
+            if not element_id:
+                # Используем stage_id как element_id для виртуального элемента
+                element_id = f"stage_{stage_id}"
+
             # Заполняем информацию об элементе
-            if stage_id and element_id:
-                element_key = f"{stage_id}_{element_id}"
-                if element_id not in stages_dict[stage_id]['elements']:
-                    stages_dict[stage_id]['elements'][element_id]['id'] = element_id
-                    stages_dict[stage_id]['elements'][element_id]['name'] = row.get('ElementName', '')
-                    stages_dict[stage_id]['elements'][element_id]['order'] = row.get('ElementOrder', 0)
+            if element_id not in stages_dict[stage_id]['elements']:
+                stages_dict[stage_id]['elements'][element_id]['id'] = element_id if isinstance(element_id, int) else None
+                stages_dict[stage_id]['elements'][element_id]['name'] = row.get('ElementName') or row.get('StageName', '')
+                stages_dict[stage_id]['elements'][element_id]['order'] = row.get('ElementOrder', 0)
 
-                # Добавляем услугу
-                status_raw = row.get('Status', 'Не выполнено')
-                status = TreatmentPlanTransformer.STATUS_MAP.get(status_raw, 'pending')
+            # Добавляем услугу
+            status_raw = row.get('Status', 'Не выполнено')
+            status = TreatmentPlanTransformer.STATUS_MAP.get(status_raw, 'pending')
 
-                price = TreatmentPlanTransformer._to_decimal(row.get('Price', 0))
-                discount = TreatmentPlanTransformer._to_decimal(row.get('DiscountAmount', 0))
-                total = TreatmentPlanTransformer._to_decimal(row.get('TotalAmount', 0))
+            price = TreatmentPlanTransformer._to_decimal(row.get('Price', 0))
+            discount = TreatmentPlanTransformer._to_decimal(row.get('DiscountAmount', 0))
+            total = TreatmentPlanTransformer._to_decimal(row.get('TotalAmount', 0))
 
-                service = {
-                    'id': service_id,
-                    'name': row.get('ServiceName', ''),
-                    'category': row.get('ServiceCategory', ''),
-                    'folder': row.get('ServiceFolder', ''),
-                    'price': float(price),
-                    'discount': float(discount),
-                    'total': float(total),
-                    'status': status,
-                    'teeth': row.get('TeethMask', ''),
-                    'exec_date': TreatmentPlanTransformer._format_datetime(row.get('ExecutionDate')),
-                    'order_id': row.get('OrderID'),
-                    'reception_id': row.get('ReceptionID')
-                }
+            service = {
+                'id': service_id,
+                'name': row.get('ServiceName', ''),
+                'category': row.get('ServiceCategory', ''),
+                'folder': row.get('ServiceFolder', ''),
+                'price': float(price),
+                'discount': float(discount),
+                'total': float(total),
+                'status': status,
+                'teeth': row.get('TeethMask', ''),
+                'exec_date': TreatmentPlanTransformer._format_datetime(row.get('ExecutionDate')),
+                'order_id': row.get('OrderID'),
+                'reception_id': row.get('ReceptionID')
+            }
 
-                stages_dict[stage_id]['elements'][element_id]['services'].append(service)
+            stages_dict[stage_id]['elements'][element_id]['services'].append(service)
 
-                # Считаем статистику
-                total_amount += total
-                status_counts[status] = status_counts.get(status, 0) + 1
+            # Считаем статистику
+            total_amount += total
+            status_counts[status] = status_counts.get(status, 0) + 1
 
         # Преобразуем словари в списки и сортируем
         for stage_id, stage_data in sorted(stages_dict.items(), key=lambda x: x[1]['order']):
