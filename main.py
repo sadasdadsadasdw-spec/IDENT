@@ -44,6 +44,10 @@ class SyncOrchestrator:
     - Очередь повторных попыток
     """
 
+    # Константы для безопасности и производительности
+    MAX_UNIQUE_ID_ATTEMPTS = 1000  # Максимум попыток найти свободный unique_id
+    DB_FETCH_BATCH_SIZE = 100      # Размер батча при чтении из БД
+
     def __init__(self, config_path: str = "config.ini"):
         """
         Инициализация оркестратора
@@ -222,6 +226,45 @@ class SyncOrchestrator:
 
         return all_ok
 
+    @staticmethod
+    def _safe_int(value: Any, field_name: str = "ID") -> int:
+        """
+        Безопасное преобразование в int с валидацией
+
+        Args:
+            value: Значение для преобразования
+            field_name: Имя поля (для логирования)
+
+        Returns:
+            Целое число
+
+        Raises:
+            ValueError: Если значение невалидно
+        """
+        if value is None:
+            raise ValueError(f"{field_name} не может быть None")
+
+        try:
+            return int(value)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Невалидное значение для {field_name}: {value!r} ({type(value).__name__})")
+
+    def _add_comment_to_deal(self, deal_id: int, deal_data: dict) -> None:
+        """
+        Добавляет комментарий к сделке если он есть
+
+        Args:
+            deal_id: ID сделки
+            deal_data: Данные сделки с полем 'comments'
+        """
+        comment_text = deal_data.get('comments')
+        if comment_text:
+            try:
+                self.b24.add_comment_to_deal(deal_id, comment_text)
+                logger.debug(f"Комментарий добавлен к сделке {deal_id}")
+            except Exception as e:
+                logger.warning(f"Не удалось добавить комментарий к сделке {deal_id}: {e}")
+
     def sync_reception_to_bitrix24(self, transformed_data: dict) -> bool:
         """
         Синхронизирует одну запись в Bitrix24
@@ -250,7 +293,7 @@ class SyncOrchestrator:
             )
 
             if existing_contact:
-                contact_id = int(existing_contact['ID'])
+                contact_id = self._safe_int(existing_contact['ID'], 'ContactID')
                 logger.debug(f"Найден существующий контакт: {contact_id}")
             else:
                 # Ищем лид по телефону И ФИО
@@ -260,7 +303,7 @@ class SyncOrchestrator:
 
                 if existing_lead:
                     lead_status = existing_lead.get('STATUS_ID', '')
-                    lead_id = int(existing_lead['ID'])
+                    lead_id = self._safe_int(existing_lead['ID'], 'LeadID')
 
                     # Проверяем статус лида - не трогаем финальные статусы
                     if lead_status in ['CONVERTED', 'JUNK']:
@@ -284,7 +327,7 @@ class SyncOrchestrator:
             existing_deal = self.b24.find_deal_by_ident_id(unique_id)
 
             if existing_deal:
-                deal_id = int(existing_deal['ID'])
+                deal_id = self._safe_int(existing_deal['ID'], 'DealID')
                 current_stage = existing_deal.get('STAGE_ID')
 
                 # Проверяем финальную стадию - создаем НОВУЮ сделку
@@ -296,17 +339,21 @@ class SyncOrchestrator:
                         f"(WON/LOSE) - создаем новую сделку"
                     )
 
-                    # Генерируем новый unique_id с суффиксом (_2, _3, ...)
+                    # Генерируем новый unique_id с суффиксом (_2, _3, ...) или timestamp
                     base_unique_id = unique_id
                     counter = 2
-                    while True:
+                    found_free_id = False
+
+                    while counter <= self.MAX_UNIQUE_ID_ATTEMPTS:
                         new_unique_id = f"{base_unique_id}_{counter}"
                         check_deal = self.b24.find_deal_by_ident_id(new_unique_id)
+
                         if not check_deal:
                             # Свободный ID найден
                             unique_id = new_unique_id
                             deal_data['uf_crm_ident_id'] = new_unique_id
                             logger.info(f"Новый unique_id: {new_unique_id}")
+                            found_free_id = True
                             break
                         else:
                             # Проверяем, не закрыта ли эта сделка тоже
@@ -315,32 +362,34 @@ class SyncOrchestrator:
                                 unique_id = new_unique_id
                                 deal_data['uf_crm_ident_id'] = new_unique_id
                                 existing_deal = check_deal
-                                deal_id = int(check_deal['ID'])
+                                deal_id = self._safe_int(check_deal['ID'], 'DealID')
                                 current_stage = check_deal.get('STAGE_ID')
                                 logger.info(f"Найдена открытая сделка {deal_id} с ID {new_unique_id}")
+                                found_free_id = True
                                 break
+
                         counter += 1
-                        if counter > 100:  # Защита от бесконечного цикла
-                            logger.error(f"Не удалось найти свободный unique_id для {base_unique_id}")
-                            return False
+
+                    # Если не нашли свободный ID - используем timestamp
+                    if not found_free_id:
+                        timestamp = int(datetime.now().timestamp())
+                        unique_id = f"{base_unique_id}_t{timestamp}"
+                        deal_data['uf_crm_ident_id'] = unique_id
+                        logger.warning(
+                            f"Превышен лимит попыток ({self.MAX_UNIQUE_ID_ATTEMPTS}), "
+                            f"используем timestamp: {unique_id}"
+                        )
+                        existing_deal = None  # Создаем новую сделку
 
                     # Если нашли открытую сделку - обновляем, иначе создаем новую
                     if existing_deal and not StageMapper.is_stage_final(existing_deal.get('STAGE_ID')):
-                        # Обновляем найденную открытую сделку
-                        pass  # Продолжаем выполнение ниже
+                        # Продолжаем выполнение ниже (будет обновление)
+                        pass
                     else:
                         # Создаем новую сделку
                         deal_id = self.b24.create_deal(deal_data, contact_id)
                         logger.info(f"✨ Создана новая сделка {deal_id} для {unique_id} (старая сделка закрыта)")
-
-                        # Добавляем комментарий
-                        comment_text = deal_data.get('comments')
-                        if comment_text:
-                            logger.info(f"📝 Добавление комментария к сделке {deal_id} (длина: {len(comment_text)} символов)")
-                            self.b24.add_comment_to_deal(deal_id, comment_text)
-                        else:
-                            logger.warning(f"⚠️ Комментарий пустой для сделки {deal_id}")
-
+                        self._add_comment_to_deal(deal_id, deal_data)
                         return True
 
                 if self.enable_update_existing:
@@ -354,30 +403,18 @@ class SyncOrchestrator:
                         deal_data_copy = deal_data.copy()
                         deal_data_copy.pop('stage_id', None)
                         self.b24.update_deal(deal_id, deal_data_copy)
-
-                        # Добавляем комментарий через Timeline API
-                        comment_text = deal_data.get('comments')
-                        if comment_text:
-                            self.b24.add_comment_to_deal(deal_id, comment_text)
+                        self._add_comment_to_deal(deal_id, deal_data)
                     else:
                         logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
                         self.b24.update_deal(deal_id, deal_data)
-
-                        # Добавляем комментарий через Timeline API
-                        comment_text = deal_data.get('comments')
-                        if comment_text:
-                            self.b24.add_comment_to_deal(deal_id, comment_text)
+                        self._add_comment_to_deal(deal_id, deal_data)
                 else:
                     logger.debug(f"Сделка {deal_id} уже существует, обновление отключено")
             else:
                 # Создаем новую сделку
                 deal_id = self.b24.create_deal(deal_data, contact_id)
                 logger.info(f"Создана сделка {deal_id} для {unique_id}")
-
-                # Добавляем комментарий через Timeline API
-                comment_text = deal_data.get('comments')
-                if comment_text:
-                    self.b24.add_comment_to_deal(deal_id, comment_text)
+                self._add_comment_to_deal(deal_id, deal_data)
 
             # Синхронизируем план лечения (оптимизированно с throttling и кешем)
             card_number = deal_data.get('UF_CRM_1769083581481') or deal_data.get('uf_crm_card_number')
