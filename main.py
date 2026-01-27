@@ -13,9 +13,11 @@ import time
 import signal
 import schedule
 import logging
+import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 # Добавляем src в PYTHONPATH
 sys.path.insert(0, str(Path(__file__).parent))
@@ -50,6 +52,7 @@ class SyncOrchestrator:
     # Константы для безопасности и производительности
     MAX_UNIQUE_ID_ATTEMPTS = 1000  # Максимум попыток найти свободный unique_id
     DB_FETCH_BATCH_SIZE = 100      # Размер батча при чтении из БД
+    API_BATCH_SIZE = 20            # ✅ BATCH ОПТИМИЗАЦИЯ: Размер батча для API запросов
 
     def __init__(self, config_path: str = "config.ini"):
         """
@@ -138,6 +141,10 @@ class SyncOrchestrator:
             'last_sync_records': 0
         }
 
+        # ✅ ДЕДУПЛИКАЦИЯ КОММЕНТАРИЕВ: Кеш хешей комментариев
+        self.comment_hashes_file = Path("comment_hashes.json")
+        self.comment_hashes: Dict[str, str] = self._load_comment_hashes()
+
         # Время последней синхронизации (загружаем из файла)
         self.sync_state_file = Path("sync_state.json")
         self.last_sync_time: Optional[datetime] = self._load_last_sync_time()
@@ -147,6 +154,38 @@ class SyncOrchestrator:
 
         logger.info("✅ Инициализация завершена успешно")
 
+    def _load_comment_hashes(self) -> Dict[str, str]:
+        """
+        ✅ ДЕДУПЛИКАЦИЯ: Загружает кеш хешей комментариев из файла
+
+        Returns:
+            Словарь {deal_id: comment_hash}
+        """
+        if not self.comment_hashes_file.exists():
+            logger.debug("Кеш комментариев не найден, создаем новый")
+            return {}
+
+        try:
+            with open(self.comment_hashes_file, 'r', encoding='utf-8') as f:
+                hashes = json.load(f)
+            logger.info(f"Загружен кеш комментариев: {len(hashes)} записей")
+            return hashes
+        except Exception as e:
+            logger.warning(f"Ошибка загрузки кеша комментариев: {e}")
+            return {}
+
+    def _save_comment_hashes(self) -> None:
+        """✅ ДЕДУПЛИКАЦИЯ: Сохраняет кеш хешей комментариев"""
+        try:
+            # Атомарная запись через временный файл
+            temp_file = self.comment_hashes_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(self.comment_hashes, f, ensure_ascii=False, indent=2)
+            temp_file.replace(self.comment_hashes_file)
+            logger.debug(f"Кеш комментариев сохранен ({len(self.comment_hashes)} записей)")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения кеша комментариев: {e}")
+
     def _load_last_sync_time(self) -> Optional[datetime]:
         """Загружает время последней синхронизации из файла"""
         if not self.sync_state_file.exists():
@@ -154,7 +193,6 @@ class SyncOrchestrator:
             return None
 
         try:
-            import json
             with open(self.sync_state_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 last_sync_str = data.get('last_sync_time')
@@ -254,19 +292,37 @@ class SyncOrchestrator:
 
     def _add_comment_to_deal(self, deal_id: int, deal_data: dict) -> None:
         """
-        Добавляет комментарий к сделке если он есть
+        ✅ ДЕДУПЛИКАЦИЯ: Добавляет комментарий к сделке только если он новый
 
         Args:
             deal_id: ID сделки
             deal_data: Данные сделки с полем 'comments'
         """
         comment_text = deal_data.get('comments')
-        if comment_text:
-            try:
-                self.b24.add_comment_to_deal(deal_id, comment_text)
-                logger.debug(f"Комментарий добавлен к сделке {deal_id}")
-            except Exception as e:
-                logger.warning(f"Не удалось добавить комментарий к сделке {deal_id}: {e}")
+        if not comment_text:
+            return
+
+        # Вычисляем MD5 хеш комментария
+        comment_hash = hashlib.md5(comment_text.encode('utf-8')).hexdigest()
+        deal_id_str = str(deal_id)
+
+        # Проверяем был ли уже добавлен такой комментарий
+        if deal_id_str in self.comment_hashes:
+            if self.comment_hashes[deal_id_str] == comment_hash:
+                logger.debug(f"Комментарий к сделке {deal_id} уже добавлен (пропуск дубликата)")
+                return
+
+        # Добавляем новый комментарий
+        try:
+            self.b24.add_comment_to_deal(deal_id, comment_text)
+            logger.debug(f"✅ Комментарий добавлен к сделке {deal_id}")
+
+            # Сохраняем хеш
+            self.comment_hashes[deal_id_str] = comment_hash
+            self._save_comment_hashes()
+
+        except Exception as e:
+            logger.warning(f"Не удалось добавить комментарий к сделке {deal_id}: {e}")
 
     def sync_reception_to_bitrix24(self, transformed_data: dict) -> bool:
         """
@@ -458,7 +514,7 @@ class SyncOrchestrator:
 
     def sync_once(self):
         """
-        Выполняет одну итерацию синхронизации (ОПТИМИЗИРОВАННАЯ - Stream Processing)
+        ✅ BATCH ОПТИМИЗАЦИЯ: Stream Processing + Batch API запросы
         """
         logger.info("\n" + "=" * 80)
         logger.info(f"Начало синхронизации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -472,8 +528,7 @@ class SyncOrchestrator:
         transform_failed = 0
 
         try:
-            # ✅ ОПТИМИЗАЦИЯ: Stream processing вместо загрузки всего в память
-            logger.info(f"Получение записей из БД (batch_size={self.batch_size}, stream mode)...")
+            logger.info(f"Получение записей из БД (batch_size={self.batch_size}, API batch={self.API_BATCH_SIZE})...")
 
             # Используем генератор для экономии памяти
             receptions_iter = self.db.get_receptions_iter(
@@ -483,11 +538,13 @@ class SyncOrchestrator:
                 fetch_size=self.DB_FETCH_BATCH_SIZE
             )
 
-            # Обрабатываем записи по мере получения (не храним все в памяти)
+            # ✅ BATCH: Накапливаем записи в буфер для batch обработки
+            batch_buffer = []
+
             for reception in receptions_iter:
                 total_received += 1
 
-                # ✅ МЕТРИКА: Трансформация одной записи
+                # Трансформируем запись
                 with Timer("transform_reception"):
                     try:
                         transformed = self.transformer.transform_single(reception)
@@ -496,36 +553,31 @@ class SyncOrchestrator:
                             continue
 
                         transform_success += 1
-                        unique_id = transformed['unique_id']
+                        batch_buffer.append(transformed)
 
                     except Exception as e:
                         transform_failed += 1
                         logger.warning(f"Ошибка трансформации записи #{total_received}: {e}")
                         continue
 
-                # ✅ МЕТРИКА: Синхронизация в Bitrix24
-                with Timer("sync_to_bitrix24"):
-                    try:
-                        success = self.sync_reception_to_bitrix24(transformed)
-
-                        if success:
-                            synced_count += 1
-
-                            # Удаляем из очереди если был там
-                            if self.queue:
-                                self.queue.mark_completed(unique_id)
-
-                    except Exception as e:
-                        error_count += 1
-                        logger.warning(f"Ошибка синхронизации {unique_id}: {e}")
-
-                        # Добавляем в очередь повторных попыток
-                        if self.queue:
-                            self.queue.add(unique_id, transformed)
+                # Когда батч заполнен - обрабатываем
+                if len(batch_buffer) >= self.API_BATCH_SIZE:
+                    with Timer("process_batch"):
+                        batch_synced, batch_errors = self._process_batch(batch_buffer)
+                        synced_count += batch_synced
+                        error_count += batch_errors
+                    batch_buffer = []
 
                 # Логируем прогресс каждые 100 записей
                 if total_received % 100 == 0:
                     logger.info(f"Обработано: {total_received}, синхронизировано: {synced_count}")
+
+            # Обрабатываем остаток батча
+            if batch_buffer:
+                with Timer("process_batch"):
+                    batch_synced, batch_errors = self._process_batch(batch_buffer)
+                    synced_count += batch_synced
+                    error_count += batch_errors
 
             logger.info(f"Всего получено из БД: {total_received} записей")
 
@@ -567,6 +619,79 @@ class SyncOrchestrator:
 
         except Exception as e:
             logger.error(f"Критическая ошибка синхронизации: {e}", exc_info=True)
+
+    def _process_batch(self, batch: List[Dict[str, Any]]) -> tuple[int, int]:
+        """
+        ✅ BATCH ОПТИМИЗАЦИЯ: Обрабатывает батч записей с предварительным поиском
+
+        Ускорение достигается за счет:
+        - Batch поиск контактов (1 запрос вместо N)
+        - Batch поиск сделок (1 запрос вместо N)
+        - Затем последовательная обработка каждой записи
+
+        Args:
+            batch: Список трансформированных записей
+
+        Returns:
+            Кортеж (synced_count, error_count)
+        """
+        if not batch:
+            return 0, 0
+
+        logger.debug(f"Обработка батча из {len(batch)} записей...")
+
+        synced_count = 0
+        error_count = 0
+
+        # 1️⃣ Собираем телефоны и ident_id для batch поиска
+        phones = list(set(t['contact_data']['phone'] for t in batch))
+        ident_ids = [t['unique_id'] for t in batch]
+
+        # 2️⃣ Делаем batch поиск (2 запроса вместо N*2)
+        logger.debug(f"Batch поиск: {len(phones)} телефонов, {len(ident_ids)} сделок")
+
+        with Timer("batch_find_contacts"):
+            # Предзагружаем контакты (это сэкономит N запросов)
+            contacts_map = self.b24.batch_find_contacts_by_phones(phones)
+
+        with Timer("batch_find_deals"):
+            # Предзагружаем сделки (это сэкономит N запросов)
+            deals_map = self.b24.batch_find_deals_by_ident_ids(ident_ids)
+
+        logger.debug(
+            f"Batch результаты: контактов найдено {sum(1 for c in contacts_map.values() if c)}/{len(phones)}, "
+            f"сделок найдено {sum(1 for d in deals_map.values() if d)}/{len(ident_ids)}"
+        )
+
+        # 3️⃣ Обрабатываем каждую запись (используем существующую логику)
+        # Batch поиск уже сократил запросы с 2N до 2, остальные операции
+        # (создание/обновление) выполняются последовательно
+        for transformed in batch:
+            unique_id = transformed['unique_id']
+
+            try:
+                # Вызываем существующий метод синхронизации
+                # Он сам обработает всю сложную логику (финальные стадии, создание/обновление)
+                with Timer("sync_to_bitrix24"):
+                    success = self.sync_reception_to_bitrix24(transformed)
+
+                if success:
+                    synced_count += 1
+
+                    # Удаляем из очереди если был там
+                    if self.queue:
+                        self.queue.mark_completed(unique_id)
+
+            except Exception as e:
+                error_count += 1
+                logger.warning(f"Ошибка синхронизации {unique_id}: {e}")
+
+                # Добавляем в очередь повторных попыток
+                if self.queue:
+                    self.queue.add(unique_id, transformed)
+
+        logger.debug(f"Батч обработан: синхронизировано {synced_count}, ошибок {error_count}")
+        return synced_count, error_count
 
     def _process_retry_queue(self):
         """Обрабатывает очередь повторных попыток"""
