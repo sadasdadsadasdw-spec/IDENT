@@ -399,7 +399,6 @@ class SyncOrchestrator:
                 # Создаем новую сделку
                 deal_id = self.b24.create_deal(deal_data, contact_id)
                 logger.info(f"Создана сделка {deal_id} для {unique_id}")
-                self._add_comment_to_deal(deal_id, deal_data)
 
             # Синхронизируем план лечения (оптимизированно с throttling и кешем)
             card_number = deal_data.get('UF_CRM_1769083581481') or deal_data.get('uf_crm_card_number')
