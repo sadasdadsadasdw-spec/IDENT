@@ -24,8 +24,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(log_dir / 'service_runner.log'),
-        logging.StreamHandler()
+        logging.FileHandler(log_dir / 'service_runner.log', encoding='utf-8')
     ]
 )
 
@@ -37,7 +36,7 @@ def main():
     Главная функция с автоматическим перезапуском при сбоях
     """
     logger.info("=" * 80)
-    logger.info("🚀 IDENT → Bitrix24 Integration Service Runner Starting")
+    logger.info("IDENT -> Bitrix24 Integration Service Runner Starting")
     logger.info("=" * 80)
     logger.info(f"Working Directory: {os.getcwd()}")
     logger.info(f"Python Version: {sys.version}")
@@ -60,7 +59,7 @@ def main():
                 restart_count += 1
                 if restart_count >= max_quick_restarts:
                     logger.error(
-                        f"❌ Слишком много быстрых перезапусков ({restart_count} за {quick_restart_window} сек)"
+                        f"ERROR: Слишком много быстрых перезапусков ({restart_count} за {quick_restart_window} сек)"
                     )
                     logger.error("Останавливаем службу для предотвращения бесконечного цикла")
                     logger.error("Проверьте логи и исправьте проблему, затем запустите службу вручную")
@@ -72,17 +71,17 @@ def main():
             last_start_time = current_time
 
             # Импортируем и запускаем основной модуль
-            logger.info("📥 Importing main module...")
+            logger.info("[INFO] Importing main module...")
 
             try:
                 from main import main as run_integration
-                logger.info("✅ Main module imported successfully")
+                logger.info("[OK] Main module imported successfully")
             except ImportError as e:
-                logger.error(f"❌ Failed to import main module: {e}")
+                logger.error(f"ERROR: Failed to import main module: {e}")
                 logger.error("Убедитесь что файл main.py существует и все зависимости установлены")
                 sys.exit(1)
 
-            logger.info("▶️  Starting integration loop...")
+            logger.info("[START]  Starting integration loop...")
             logger.info("")
 
             # Запускаем интеграцию
@@ -90,18 +89,18 @@ def main():
 
             # Если дошли сюда, значит интеграция завершилась штатно
             logger.info("")
-            logger.info("✅ Integration completed normally")
+            logger.info("[OK] Integration completed normally")
             break
 
         except KeyboardInterrupt:
             logger.info("")
-            logger.info("🛑 Service stopped by user (Ctrl+C)")
+            logger.info("[STOP] Service stopped by user (Ctrl+C)")
             sys.exit(0)
 
         except Exception as e:
             logger.error("")
             logger.error("=" * 80)
-            logger.error(f"❌ FATAL ERROR: {e}")
+            logger.error(f"ERROR: FATAL ERROR: {e}")
             logger.error("=" * 80)
             logger.exception("Full traceback:")
             logger.error("=" * 80)
@@ -109,18 +108,18 @@ def main():
             # Определяем нужно ли перезапускаться
             restart_delay = 60
 
-            logger.warning(f"🔄 Service will restart in {restart_delay} seconds...")
+            logger.warning(f"[RESTART] Service will restart in {restart_delay} seconds...")
             logger.warning(f"   (Restart #{restart_count + 1})")
             logger.warning("")
 
             time.sleep(restart_delay)
 
-            logger.info("🔄 Restarting integration...")
+            logger.info("[RESTART] Restarting integration...")
             logger.info("")
             # Цикл продолжится и попробует перезапустить
 
     logger.info("=" * 80)
-    logger.info("🏁 Service Runner shutting down")
+    logger.info("[END] Service Runner shutting down")
     logger.info("=" * 80)
 
 
