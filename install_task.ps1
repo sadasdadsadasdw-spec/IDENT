@@ -30,8 +30,7 @@ Write-Host ""
 $TaskName = "IdentBitrix24Integration"
 $TaskPath = "\IDENT\"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PythonExe = (Get-Command python).Source
-$ServiceScript = Join-Path $ScriptDir "run_service.py"
+$ExeFile = Join-Path $ScriptDir "dist\ident_sync.exe"
 $LogDir = Join-Path $ScriptDir "logs"
 
 # Create logs directory
@@ -40,20 +39,13 @@ if (-not (Test-Path $LogDir)) {
     Write-Host "Created logs directory: $LogDir" -ForegroundColor Green
 }
 
-# Check Python
-if (-not $PythonExe) {
-    Write-Host "ERROR: Python not found in PATH!" -ForegroundColor Red
+# Check ident_sync.exe
+if (-not (Test-Path $ExeFile)) {
+    Write-Host "ERROR: ident_sync.exe not found!" -ForegroundColor Red
+    Write-Host "Expected path: $ExeFile" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "Make sure Python is installed and added to PATH" -ForegroundColor Yellow
-    Write-Host ""
-    Read-Host "Press Enter to exit"
-    exit 1
-}
-
-# Check run_service.py
-if (-not (Test-Path $ServiceScript)) {
-    Write-Host "ERROR: run_service.py not found!" -ForegroundColor Red
-    Write-Host "Expected path: $ServiceScript" -ForegroundColor Yellow
+    Write-Host "Build the EXE first:" -ForegroundColor Yellow
+    Write-Host "  .\build_exe.ps1" -ForegroundColor White
     Write-Host ""
     Read-Host "Press Enter to exit"
     exit 1
@@ -75,9 +67,8 @@ if (-not (Test-Path $ConfigFile)) {
 Write-Host "Task configuration:" -ForegroundColor Cyan
 Write-Host "  Task name:         $TaskName" -ForegroundColor White
 Write-Host "  Task path:         $TaskPath" -ForegroundColor White
-Write-Host "  Python:            $PythonExe" -ForegroundColor White
 Write-Host "  Working directory: $ScriptDir" -ForegroundColor White
-Write-Host "  Script:            $ServiceScript" -ForegroundColor White
+Write-Host "  Executable:        $ExeFile" -ForegroundColor White
 Write-Host ""
 
 # Check if task exists
@@ -100,10 +91,9 @@ if ($ExistingTask) {
 # Create task
 Write-Host "Creating task in Task Scheduler..." -ForegroundColor Cyan
 
-# Action: Run Python script
+# Action: Run EXE file
 $Action = New-ScheduledTaskAction `
-    -Execute $PythonExe `
-    -Argument "`"$ServiceScript`"" `
+    -Execute $ExeFile `
     -WorkingDirectory $ScriptDir
 
 # Trigger: At system startup
