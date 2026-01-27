@@ -644,7 +644,7 @@ class SyncOrchestrator:
         error_count = 0
 
         # 1️⃣ Собираем телефоны и ident_id для batch поиска
-        phones = list(set(t['contact_data']['phone'] for t in batch))
+        phones = list(set(t['contact']['phone'] for t in batch))
         ident_ids = [t['unique_id'] for t in batch]
 
         # 2️⃣ Делаем batch поиск (2 запроса вместо N*2)
