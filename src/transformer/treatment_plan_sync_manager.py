@@ -32,18 +32,24 @@ class TreatmentPlanCache:
     - deal_id -> card_number (для быстрого поиска)
     """
 
-    def __init__(self, cache_file: str = "treatment_plan_cache.json"):
+    def __init__(self, cache_file: str = "treatment_plan_cache.json", max_entries: int = 10000):
         """
+        ✅ ОПТИМИЗАЦИЯ: Добавлен лимит размера кеша для предотвращения роста памяти
+
         Args:
             cache_file: Путь к файлу кеша
+            max_entries: Максимальное количество записей в кеше (default: 10000)
         """
         self.cache_file = Path(cache_file)
+        self.max_entries = max_entries
         self.data = {
             'hashes': {},  # card_number -> hash
             'timestamps': {},  # card_number -> last_update_timestamp
             'deal_mapping': {}  # deal_id -> card_number
         }
         self._load()
+        # Автоочистка старых записей при инициализации
+        self.cleanup_old_entries(max_age_days=90)
 
     def _load(self):
         """Загружает кеш из файла"""
@@ -76,7 +82,24 @@ class TreatmentPlanCache:
         return self.data['hashes'].get(str(card_number))
 
     def set_hash(self, card_number: str, plan_hash: str):
-        """Сохраняет хеш плана в кеш"""
+        """
+        ✅ ОПТИМИЗАЦИЯ: Сохраняет хеш с проверкой лимита (LRU eviction)
+        """
+        # Проверяем лимит размера кеша
+        if len(self.data['hashes']) >= self.max_entries:
+            # Удаляем 10% самых старых записей (LRU eviction)
+            entries_to_remove = int(self.max_entries * 0.1)
+            oldest_entries = sorted(
+                self.data['timestamps'].items(),
+                key=lambda x: x[1]
+            )[:entries_to_remove]
+
+            for card, _ in oldest_entries:
+                self.data['hashes'].pop(card, None)
+                self.data['timestamps'].pop(card, None)
+
+            logger.debug(f"LRU eviction: удалено {entries_to_remove} старых записей из кеша")
+
         self.data['hashes'][str(card_number)] = plan_hash
         self.data['timestamps'][str(card_number)] = time.time()
         self._save()

@@ -29,6 +29,9 @@ from src.transformer.data_transformer import DataTransformer
 from src.transformer.treatment_plan_sync_manager import TreatmentPlanSyncManager
 from src.queue.queue_manager import PersistentQueue
 
+# ✅ ОПТИМИЗАЦИЯ: Метрики производительности
+from src.utils.performance_metrics import Timer, get_metrics
+
 # Глобальный logger (будет инициализирован в main())
 logger = None
 
@@ -455,7 +458,7 @@ class SyncOrchestrator:
 
     def sync_once(self):
         """
-        Выполняет одну итерацию синхронизации
+        Выполняет одну итерацию синхронизации (ОПТИМИЗИРОВАННАЯ - Stream Processing)
         """
         logger.info("\n" + "=" * 80)
         logger.info(f"Начало синхронизации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -464,55 +467,73 @@ class SyncOrchestrator:
         sync_start = time.time()
         synced_count = 0
         error_count = 0
+        total_received = 0
+        transform_success = 0
+        transform_failed = 0
 
         try:
-            # 1. Получаем записи из БД
-            logger.info(f"Получение записей из БД (batch_size={self.batch_size})...")
-            receptions = self.db.get_receptions(
+            # ✅ ОПТИМИЗАЦИЯ: Stream processing вместо загрузки всего в память
+            logger.info(f"Получение записей из БД (batch_size={self.batch_size}, stream mode)...")
+
+            # Используем генератор для экономии памяти
+            receptions_iter = self.db.get_receptions_iter(
                 last_sync_time=self.last_sync_time,
                 batch_size=self.batch_size,
-                initial_days=self.initial_days
+                initial_days=self.initial_days,
+                fetch_size=self.DB_FETCH_BATCH_SIZE
             )
 
-            logger.info(f"Получено записей: {len(receptions)}")
+            # Обрабатываем записи по мере получения (не храним все в памяти)
+            for reception in receptions_iter:
+                total_received += 1
 
-            if not receptions:
+                # ✅ МЕТРИКА: Трансформация одной записи
+                with Timer("transform_reception"):
+                    try:
+                        transformed = self.transformer.transform_single(reception)
+                        if not transformed:
+                            transform_failed += 1
+                            continue
+
+                        transform_success += 1
+                        unique_id = transformed['unique_id']
+
+                    except Exception as e:
+                        transform_failed += 1
+                        logger.warning(f"Ошибка трансформации записи #{total_received}: {e}")
+                        continue
+
+                # ✅ МЕТРИКА: Синхронизация в Bitrix24
+                with Timer("sync_to_bitrix24"):
+                    try:
+                        success = self.sync_reception_to_bitrix24(transformed)
+
+                        if success:
+                            synced_count += 1
+
+                            # Удаляем из очереди если был там
+                            if self.queue:
+                                self.queue.mark_completed(unique_id)
+
+                    except Exception as e:
+                        error_count += 1
+                        logger.warning(f"Ошибка синхронизации {unique_id}: {e}")
+
+                        # Добавляем в очередь повторных попыток
+                        if self.queue:
+                            self.queue.add(unique_id, transformed)
+
+                # Логируем прогресс каждые 100 записей
+                if total_received % 100 == 0:
+                    logger.info(f"Обработано: {total_received}, синхронизировано: {synced_count}")
+
+            logger.info(f"Всего получено из БД: {total_received} записей")
+
+            if total_received == 0:
                 logger.info("Новых записей нет")
                 return
 
-            # 2. Трансформируем данные
-            logger.info("Трансформация данных...")
-            successful, failed = self.transformer.transform_batch(receptions)
-
-            logger.info(
-                f"Трансформация: успешно={len(successful)}, "
-                f"ошибок={len(failed)}"
-            )
-
-            # 3. Синхронизируем в Bitrix24
-            logger.info("Синхронизация в Bitrix24...")
-
-            for transformed in successful:
-                unique_id = transformed['unique_id']
-
-                try:
-                    success = self.sync_reception_to_bitrix24(transformed)
-
-                    if success:
-                        synced_count += 1
-
-                        # Удаляем из очереди если был там
-                        if self.queue:
-                            self.queue.mark_completed(unique_id)
-
-                except Exception as e:
-                    error_count += 1
-
-                    # Добавляем в очередь повторных попыток
-                    if self.queue:
-                        self.queue.add(unique_id, transformed)
-
-            # 4. Обрабатываем очередь повторных попыток
+            # Обрабатываем очередь повторных попыток
             if self.queue:
                 self._process_retry_queue()
 
@@ -526,17 +547,23 @@ class SyncOrchestrator:
             self.stats['total_synced'] += synced_count
             self.stats['total_errors'] += error_count
             self.stats['last_sync_time'] = self.last_sync_time
-            self.stats['last_sync_records'] = len(receptions)
+            self.stats['last_sync_records'] = total_received
 
             logger.info("\n" + "=" * 80)
             logger.info("Результаты синхронизации")
             logger.info("=" * 80)
-            logger.info(f"Получено из БД:       {len(receptions)}")
-            logger.info(f"Трансформировано:     {len(successful)}")
+            logger.info(f"Получено из БД:       {total_received}")
+            logger.info(f"Трансформировано:     {transform_success}")
+            logger.info(f"Ошибок трансформации: {transform_failed}")
             logger.info(f"Синхронизировано:     {synced_count}")
-            logger.info(f"Ошибок:               {error_count}")
+            logger.info(f"Ошибок синхронизации: {error_count}")
             logger.info(f"Время выполнения:     {sync_duration:.2f}с")
+            if total_received > 0:
+                logger.info(f"Скорость:             {total_received / sync_duration:.1f} записей/сек")
             logger.info("=" * 80)
+
+            # ✅ ОПТИМИЗАЦИЯ: Вывод метрик производительности
+            get_metrics().log_summary()
 
         except Exception as e:
             logger.error(f"Критическая ошибка синхронизации: {e}", exc_info=True)
