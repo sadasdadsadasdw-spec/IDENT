@@ -13,7 +13,6 @@ import time
 import signal
 import schedule
 import logging
-import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -141,10 +140,6 @@ class SyncOrchestrator:
             'last_sync_records': 0
         }
 
-        # ✅ ДЕДУПЛИКАЦИЯ КОММЕНТАРИЕВ: Кеш хешей комментариев
-        self.comment_hashes_file = Path("comment_hashes.json")
-        self.comment_hashes: Dict[str, str] = self._load_comment_hashes()
-
         # Время последней синхронизации (загружаем из файла)
         self.sync_state_file = Path("sync_state.json")
         self.last_sync_time: Optional[datetime] = self._load_last_sync_time()
@@ -153,38 +148,6 @@ class SyncOrchestrator:
         self.should_stop = False
 
         logger.info("✅ Инициализация завершена успешно")
-
-    def _load_comment_hashes(self) -> Dict[str, str]:
-        """
-        ✅ ДЕДУПЛИКАЦИЯ: Загружает кеш хешей комментариев из файла
-
-        Returns:
-            Словарь {deal_id: comment_hash}
-        """
-        if not self.comment_hashes_file.exists():
-            logger.debug("Кеш комментариев не найден, создаем новый")
-            return {}
-
-        try:
-            with open(self.comment_hashes_file, 'r', encoding='utf-8') as f:
-                hashes = json.load(f)
-            logger.info(f"Загружен кеш комментариев: {len(hashes)} записей")
-            return hashes
-        except Exception as e:
-            logger.warning(f"Ошибка загрузки кеша комментариев: {e}")
-            return {}
-
-    def _save_comment_hashes(self) -> None:
-        """✅ ДЕДУПЛИКАЦИЯ: Сохраняет кеш хешей комментариев"""
-        try:
-            # Атомарная запись через временный файл
-            temp_file = self.comment_hashes_file.with_suffix('.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(self.comment_hashes, f, ensure_ascii=False, indent=2)
-            temp_file.replace(self.comment_hashes_file)
-            logger.debug(f"Кеш комментариев сохранен ({len(self.comment_hashes)} записей)")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения кеша комментариев: {e}")
 
     def _load_last_sync_time(self) -> Optional[datetime]:
         """Загружает время последней синхронизации из файла"""
@@ -289,40 +252,6 @@ class SyncOrchestrator:
             return int(value)
         except (ValueError, TypeError) as e:
             raise ValueError(f"Невалидное значение для {field_name}: {value!r} ({type(value).__name__})")
-
-    def _add_comment_to_deal(self, deal_id: int, deal_data: dict) -> None:
-        """
-        ✅ ДЕДУПЛИКАЦИЯ: Добавляет комментарий к сделке только если он новый
-
-        Args:
-            deal_id: ID сделки
-            deal_data: Данные сделки с полем 'comments'
-        """
-        comment_text = deal_data.get('comments')
-        if not comment_text:
-            return
-
-        # Вычисляем MD5 хеш комментария
-        comment_hash = hashlib.md5(comment_text.encode('utf-8')).hexdigest()
-        deal_id_str = str(deal_id)
-
-        # Проверяем был ли уже добавлен такой комментарий
-        if deal_id_str in self.comment_hashes:
-            if self.comment_hashes[deal_id_str] == comment_hash:
-                logger.debug(f"Комментарий к сделке {deal_id} уже добавлен (пропуск дубликата)")
-                return
-
-        # Добавляем новый комментарий
-        try:
-            self.b24.add_comment_to_deal(deal_id, comment_text)
-            logger.debug(f"✅ Комментарий добавлен к сделке {deal_id}")
-
-            # Сохраняем хеш
-            self.comment_hashes[deal_id_str] = comment_hash
-            self._save_comment_hashes()
-
-        except Exception as e:
-            logger.warning(f"Не удалось добавить комментарий к сделке {deal_id}: {e}")
 
     def sync_reception_to_bitrix24(self, transformed_data: dict) -> bool:
         """
@@ -448,7 +377,6 @@ class SyncOrchestrator:
                         # Создаем новую сделку
                         deal_id = self.b24.create_deal(deal_data, contact_id)
                         logger.info(f"✨ Создана новая сделка {deal_id} для {unique_id} (старая сделка закрыта)")
-                        self._add_comment_to_deal(deal_id, deal_data)
                         return True
 
                 if self.enable_update_existing:
@@ -462,11 +390,9 @@ class SyncOrchestrator:
                         deal_data_copy = deal_data.copy()
                         deal_data_copy.pop('stage_id', None)
                         self.b24.update_deal(deal_id, deal_data_copy)
-                        self._add_comment_to_deal(deal_id, deal_data)
                     else:
                         logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
                         self.b24.update_deal(deal_id, deal_data)
-                        self._add_comment_to_deal(deal_id, deal_data)
                 else:
                     logger.debug(f"Сделка {deal_id} уже существует, обновление отключено")
             else:
