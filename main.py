@@ -25,7 +25,7 @@ from src.config.config_manager_v2 import get_config, ConfigValidationError
 from src.logger.custom_logger_v2 import get_logger
 from src.database.ident_connector_v2 import IdentConnector
 from src.bitrix.api_client import Bitrix24Client, Bitrix24Error
-from src.transformer.data_transformer import DataTransformer
+from src.transformer.data_transformer import DataTransformer, StageMapper
 from src.transformer.treatment_plan_sync_manager import TreatmentPlanSyncManager
 from src.queue.queue_manager import PersistentQueue
 
@@ -173,7 +173,6 @@ class SyncOrchestrator:
             return
 
         try:
-            import json
             data = {
                 'last_sync_time': self.last_sync_time.isoformat(),
                 'filial_id': self.filial_id,
@@ -318,8 +317,6 @@ class SyncOrchestrator:
                 current_stage = existing_deal.get('STAGE_ID')
 
                 # Проверяем финальную стадию - создаем НОВУЮ сделку
-                from src.transformer.data_transformer import StageMapper
-
                 if StageMapper.is_stage_final(current_stage):
                     logger.info(
                         f"REOPEN: Сделка {deal_id} в финальной стадии '{current_stage}' "
@@ -369,31 +366,31 @@ class SyncOrchestrator:
                         existing_deal = None  # Создаем новую сделку
 
                     # Если нашли открытую сделку - обновляем, иначе создаем новую
-                    if existing_deal and not StageMapper.is_stage_final(existing_deal.get('STAGE_ID')):
-                        # Продолжаем выполнение ниже (будет обновление)
-                        pass
-                    else:
-                        # Создаем новую сделку
+                    if not existing_deal or StageMapper.is_stage_final(existing_deal.get('STAGE_ID')):
                         deal_id = self.b24.create_deal(deal_data, contact_id)
-                        logger.info(f"✨ Создана новая сделка {deal_id} для {unique_id} (старая сделка закрыта)")
+                        logger.info(f"Создана новая сделка {deal_id} для {unique_id} (старая сделка закрыта)")
                         return True
 
-                if self.enable_update_existing:
-                    # Проверяем защищенные стадии
-                    if StageMapper.is_stage_protected(current_stage):
-                        logger.info(
-                            f"PROTECTED: Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
-                            f"- обновляем только данные, стадию не меняем"
-                        )
-                        # Убираем stage_id из обновления
-                        deal_data_copy = deal_data.copy()
-                        deal_data_copy.pop('stage_id', None)
+                if StageMapper.is_stage_protected(current_stage):
+                    logger.info(
+                        f"PROTECTED: Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
+                        f"- обновляем только данные, стадию не меняем"
+                    )
+                    deal_data_copy = deal_data.copy()
+                    deal_data_copy.pop('stage_id', None)
+                    if self.enable_update_existing:
                         self.b24.update_deal(deal_id, deal_data_copy)
                     else:
+                        logger.debug(f"Обновление данных отключено для {deal_id}")
+                else:
+                    if self.enable_update_existing:
                         logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
                         self.b24.update_deal(deal_id, deal_data)
-                else:
-                    logger.debug(f"Сделка {deal_id} уже существует, обновление отключено")
+                    else:
+                        logger.info(f"Обновляем стадию сделки {deal_id} для {unique_id}")
+                        stage_only = {'stage_id': deal_data.get('stage_id')}
+                        if stage_only['stage_id']:
+                            self.b24.update_deal(deal_id, stage_only)
             else:
                 # Создаем новую сделку
                 deal_id = self.b24.create_deal(deal_data, contact_id)
@@ -647,6 +644,9 @@ class SyncOrchestrator:
                 if success:
                     self.queue.mark_completed(unique_id)
                     logger.info(f" {unique_id} успешно обработан из очереди")
+                else:
+                    self.queue.mark_failed(unique_id, "Sync returned False")
+                    logger.warning(f"WARNING: {unique_id} не синхронизирован (returned False)")
 
             except Exception as e:
                 error_msg = str(e)
