@@ -55,7 +55,7 @@ pyinstaller `
     --hidden-import=pathlib `
     --collect-all=pyodbc `
     --noconfirm `
-    run_service.py
+    main.py
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
