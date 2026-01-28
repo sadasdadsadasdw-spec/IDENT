@@ -346,6 +346,19 @@ class PersistentQueue:
 
             return stats
 
+    def exists(self, unique_id: str) -> bool:
+        """
+        Проверяет наличие элемента в очереди
+
+        Args:
+            unique_id: ID элемента
+
+        Returns:
+            True если элемент существует
+        """
+        with self.lock:
+            return unique_id in self.items
+
     def get_failed_items(self) -> List[QueueItem]:
         """Возвращает список неудачных элементов"""
         with self.lock:

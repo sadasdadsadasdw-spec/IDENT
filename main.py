@@ -600,7 +600,7 @@ class SyncOrchestrator:
                     synced_count += 1
 
                     # Удаляем из очереди если был там
-                    if self.queue:
+                    if self.queue and self.queue.exists(unique_id):
                         self.queue.mark_completed(unique_id)
 
             except Exception as e:
