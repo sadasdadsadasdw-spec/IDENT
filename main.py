@@ -102,7 +102,8 @@ class SyncOrchestrator:
         self.b24 = Bitrix24Client(
             webhook_url=b24_config['webhook_url'],
             request_timeout=b24_config['request_timeout'],
-            max_retries=b24_config['max_retries']
+            max_retries=b24_config['max_retries'],
+            default_assigned_by_id=b24_config.get('default_assigned_by_id')
         )
 
         # 3. Data transformer
