@@ -273,7 +273,7 @@ class SyncOrchestrator:
             last_name = contact_data.get('last_name', '')
             second_name = contact_data.get('second_name', '')
 
-            # Ищем контакт по телефону И ФИО (важно для семей с одним номером)
+            # Ищем контакт по телефону И ФИО
             existing_contact = self.b24.find_contact_by_phone_and_name(
                 phone, name, last_name, second_name
             )
@@ -281,33 +281,30 @@ class SyncOrchestrator:
             if existing_contact:
                 contact_id = self._safe_int(existing_contact['ID'], 'ContactID')
                 logger.debug(f"Найден существующий контакт: {contact_id}")
-            else:
-                # Ищем лид по телефону И ФИО
-                existing_lead = self.b24.find_lead_by_phone_and_name(
-                    phone, name, last_name
-                )
 
-                if existing_lead:
-                    lead_status = existing_lead.get('STATUS_ID', '')
-                    lead_id = self._safe_int(existing_lead['ID'], 'LeadID')
+            # ВСЕГДА ищем лид (даже если контакт уже есть!)
+            existing_lead = self.b24.find_lead_by_phone_and_name(
+                phone, name, last_name
+            )
 
-                    # Проверяем статус лида - не трогаем финальные статусы
-                    if lead_status in ['CONVERTED', 'JUNK']:
-                        logger.info(
-                            f"SKIP: Лид ID={lead_id} в финальном статусе '{lead_status}' "
-                            f"- пропускаем конвертацию"
-                        )
-                    else:
-                        # Лид найден и в рабочем статусе - переводим в CONVERTED
-                        logger.info(f"Найден лид ID={lead_id} (статус: {lead_status}) для телефона {phone[:10]}...")
-                        logger.info(f"Перемещаем лид в стадию CONVERTED")
-                        self.b24.update_lead_status(lead_id, 'CONVERTED')
+            if existing_lead:
+                lead_status = existing_lead.get('STATUS_ID', '')
+                lead_id = self._safe_int(existing_lead['ID'], 'LeadID')
 
-                    # Создаем контакт из наших данных
-                    contact_id = self.b24.create_contact(contact_data)
+                # Конвертируем лид если он не в финальном статусе
+                if lead_status in ['CONVERTED', 'JUNK']:
+                    logger.info(
+                        f"SKIP: Лид ID={lead_id} в финальном статусе '{lead_status}' "
+                        f"- пропускаем конвертацию"
+                    )
                 else:
-                    # Создаем новый контакт
-                    contact_id = self.b24.create_contact(contact_data)
+                    logger.info(f"Найден лид ID={lead_id} (статус: {lead_status}) для телефона {phone[:10]}...")
+                    logger.info(f"Перемещаем лид в стадию CONVERTED")
+                    self.b24.update_lead_status(lead_id, 'CONVERTED')
+
+            # Создаем контакт если еще не был найден
+            if not contact_id:
+                contact_id = self.b24.create_contact(contact_data)
 
             # 2. Создаем/обновляем сделку
             existing_deal = self.b24.find_deal_by_ident_id(unique_id)
@@ -543,10 +540,11 @@ class SyncOrchestrator:
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> tuple[int, int]:
         """
-         BATCH ОПТИМИЗАЦИЯ: Обрабатывает батч записей с предварительным поиском
+        BATCH ОПТИМИЗАЦИЯ: Обрабатывает батч записей с предварительным поиском
 
         Ускорение достигается за счет:
         - Batch поиск контактов (1 запрос вместо N)
+        - Batch поиск лидов (1 запрос вместо N)
         - Batch поиск сделок (1 запрос вместо N)
         - Затем последовательная обработка каждой записи
 
@@ -568,24 +566,26 @@ class SyncOrchestrator:
         phones = list(set(t['contact']['phone'] for t in batch))
         ident_ids = [t['unique_id'] for t in batch]
 
-        # 2. Делаем batch поиск (2 запроса вместо N*2)
+        # 2. Делаем batch поиск (3 запроса вместо N*3)
         logger.debug(f"Batch поиск: {len(phones)} телефонов, {len(ident_ids)} сделок")
 
         with Timer("batch_find_contacts"):
-            # Предзагружаем контакты (это сэкономит N запросов)
             contacts_map = self.b24.batch_find_contacts_by_phones(phones)
 
+        with Timer("batch_find_leads"):
+            leads_map = self.b24.batch_find_leads_by_phones(phones)
+
         with Timer("batch_find_deals"):
-            # Предзагружаем сделки (это сэкономит N запросов)
             deals_map = self.b24.batch_find_deals_by_ident_ids(ident_ids)
 
         logger.debug(
-            f"Batch результаты: контактов найдено {sum(1 for c in contacts_map.values() if c)}/{len(phones)}, "
-            f"сделок найдено {sum(1 for d in deals_map.values() if d)}/{len(ident_ids)}"
+            f"Batch результаты: контактов {sum(1 for c in contacts_map.values() if c)}/{len(phones)}, "
+            f"лидов {sum(1 for l in leads_map.values() if l)}/{len(phones)}, "
+            f"сделок {sum(1 for d in deals_map.values() if d)}/{len(ident_ids)}"
         )
 
         # 3. Обрабатываем каждую запись (используем существующую логику)
-        # Batch поиск уже сократил запросы с 2N до 2, остальные операции
+        # Batch поиск уже сократил запросы с 3N до 3, остальные операции
         # (создание/обновление) выполняются последовательно
         for transformed in batch:
             unique_id = transformed['unique_id']
