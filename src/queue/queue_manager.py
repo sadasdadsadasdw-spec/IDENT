@@ -297,18 +297,29 @@ class PersistentQueue:
             return True
 
     def cleanup_old_items(self):
-        """Удаляет старые завершенные элементы"""
+        """Удаляет старые завершенные и безнадежно проваленные элементы"""
         with self.lock:
             cutoff = datetime.now() - timedelta(days=self.retention_days)
             initial_count = len(self.items)
 
-            # Удаляем старые завершенные
             to_remove = []
+            completed_removed = 0
+            failed_removed = 0
+
             for unique_id, item in self.items.items():
+                updated_at = datetime.fromisoformat(item.updated_at)
+
+                # Удаляем старые завершенные
                 if item.status == QueueItemStatus.COMPLETED.value:
-                    updated_at = datetime.fromisoformat(item.updated_at)
                     if updated_at < cutoff:
                         to_remove.append(unique_id)
+                        completed_removed += 1
+
+                # Удаляем старые FAILED элементы (исчерпали попытки)
+                elif item.status == QueueItemStatus.FAILED.value:
+                    if item.retry_count >= self.max_retry_attempts and updated_at < cutoff:
+                        to_remove.append(unique_id)
+                        failed_removed += 1
 
             for unique_id in to_remove:
                 del self.items[unique_id]
@@ -316,8 +327,9 @@ class PersistentQueue:
             if to_remove:
                 self._save_to_file()
                 logger.info(
-                    f"Очищено старых элементов: {len(to_remove)} "
-                    f"(было {initial_count}, осталось {len(self.items)})"
+                    f"Очищено элементов очереди: {len(to_remove)} "
+                    f"(completed={completed_removed}, failed={failed_removed}). "
+                    f"Было {initial_count}, осталось {len(self.items)}"
                 )
 
     def get_statistics(self) -> Dict[str, int]:

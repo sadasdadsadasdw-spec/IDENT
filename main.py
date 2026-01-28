@@ -507,6 +507,8 @@ class SyncOrchestrator:
             # Обрабатываем очередь повторных попыток
             if self.queue:
                 self._process_retry_queue()
+                # Периодически чистим старые элементы очереди
+                self.queue.cleanup_old_items()
 
             # Обновляем время последней синхронизации
             self.last_sync_time = datetime.now()
@@ -601,7 +603,7 @@ class SyncOrchestrator:
                     synced_count += 1
 
                     # Удаляем из очереди если был там
-                    if self.queue and self.queue.exists(unique_id):
+                    if self.queue:
                         self.queue.mark_completed(unique_id)
 
             except Exception as e:
