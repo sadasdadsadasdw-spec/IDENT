@@ -11,7 +11,6 @@
 import sys
 import time
 import signal
-import schedule
 import logging
 import json
 from datetime import datetime
@@ -30,7 +29,7 @@ from src.transformer.data_transformer import DataTransformer
 from src.transformer.treatment_plan_sync_manager import TreatmentPlanSyncManager
 from src.queue.queue_manager import PersistentQueue
 
-# ✅ ОПТИМИЗАЦИЯ: Метрики производительности
+#  ОПТИМИЗАЦИЯ: Метрики производительности
 from src.utils.performance_metrics import Timer, get_metrics
 
 # Глобальный logger (будет инициализирован в main())
@@ -51,7 +50,7 @@ class SyncOrchestrator:
     # Константы для безопасности и производительности
     MAX_UNIQUE_ID_ATTEMPTS = 1000  # Максимум попыток найти свободный unique_id
     DB_FETCH_BATCH_SIZE = 100      # Размер батча при чтении из БД
-    API_BATCH_SIZE = 20            # ✅ BATCH ОПТИМИЗАЦИЯ: Размер батча для API запросов
+    API_BATCH_SIZE = 20            #  BATCH ОПТИМИЗАЦИЯ: Размер батча для API запросов
 
     def __init__(self, config_path: str = "config.ini"):
         """
@@ -147,7 +146,7 @@ class SyncOrchestrator:
         # Флаг остановки
         self.should_stop = False
 
-        logger.info("✅ Инициализация завершена успешно")
+        logger.info("Инициализация завершена успешно")
 
     def _load_last_sync_time(self) -> Optional[datetime]:
         """Загружает время последней синхронизации из файла"""
@@ -207,26 +206,26 @@ class SyncOrchestrator:
 
         # Тест БД
         try:
-            logger.info("1️⃣ Тест подключения к БД Ident...")
+            logger.info("1. Тест подключения к БД Ident...")
             self.db.test_connection()
-            logger.info("   ✅ Подключение к БД OK")
+            logger.info("    Подключение к БД OK")
         except Exception as e:
-            logger.error(f"   ❌ Ошибка подключения к БД: {e}")
+            logger.error(f"   ERROR: Ошибка подключения к БД: {e}")
             all_ok = False
 
         # Тест Bitrix24
         try:
-            logger.info("2️⃣ Тест подключения к Bitrix24...")
+            logger.info("2. Тест подключения к Bitrix24...")
             self.b24.test_connection()
-            logger.info("   ✅ Подключение к Bitrix24 OK")
+            logger.info("    Подключение к Bitrix24 OK")
         except Exception as e:
-            logger.error(f"   ❌ Ошибка подключения к Bitrix24: {e}")
+            logger.error(f"   ERROR: Ошибка подключения к Bitrix24: {e}")
             all_ok = False
 
         if all_ok:
-            logger.info("\n✅ Все подключения работают корректно")
+            logger.info("\n Все подключения работают корректно")
         else:
-            logger.error("\n❌ Обнаружены проблемы с подключениями!")
+            logger.error("\nERROR: Обнаружены проблемы с подключениями!")
 
         return all_ok
 
@@ -296,7 +295,7 @@ class SyncOrchestrator:
                     # Проверяем статус лида - не трогаем финальные статусы
                     if lead_status in ['CONVERTED', 'JUNK']:
                         logger.info(
-                            f"⛔ Лид ID={lead_id} в финальном статусе '{lead_status}' "
+                            f"SKIP: Лид ID={lead_id} в финальном статусе '{lead_status}' "
                             f"- пропускаем конвертацию"
                         )
                     else:
@@ -323,7 +322,7 @@ class SyncOrchestrator:
 
                 if StageMapper.is_stage_final(current_stage):
                     logger.info(
-                        f"🔄 Сделка {deal_id} в финальной стадии '{current_stage}' "
+                        f"REOPEN: Сделка {deal_id} в финальной стадии '{current_stage}' "
                         f"(WON/LOSE) - создаем новую сделку"
                     )
 
@@ -383,7 +382,7 @@ class SyncOrchestrator:
                     # Проверяем защищенные стадии
                     if StageMapper.is_stage_protected(current_stage):
                         logger.info(
-                            f"🔒 Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
+                            f"PROTECTED: Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
                             f"- обновляем только данные, стадию не меняем"
                         )
                         # Убираем stage_id из обновления
@@ -411,7 +410,7 @@ class SyncOrchestrator:
                     # Не прерываем синхронизацию из-за ошибки плана лечения
             elif deal_id and not card_number:
                 logger.debug(
-                    f"⚠️ CardNumber отсутствует для сделки {deal_id} ({unique_id}), "
+                    f"WARNING: CardNumber отсутствует для сделки {deal_id} ({unique_id}), "
                     f"план лечения не синхронизирован"
                 )
 
@@ -439,7 +438,7 @@ class SyncOrchestrator:
 
     def sync_once(self):
         """
-        ✅ BATCH ОПТИМИЗАЦИЯ: Stream Processing + Batch API запросы
+         BATCH ОПТИМИЗАЦИЯ: Stream Processing + Batch API запросы
         """
         logger.info("\n" + "=" * 80)
         logger.info(f"Начало синхронизации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -463,7 +462,7 @@ class SyncOrchestrator:
                 fetch_size=self.DB_FETCH_BATCH_SIZE
             )
 
-            # ✅ BATCH: Накапливаем записи в буфер для batch обработки
+            #  BATCH: Накапливаем записи в буфер для batch обработки
             batch_buffer = []
 
             for reception in receptions_iter:
@@ -539,7 +538,7 @@ class SyncOrchestrator:
                 logger.info(f"Скорость:             {total_received / sync_duration:.1f} записей/сек")
             logger.info("=" * 80)
 
-            # ✅ ОПТИМИЗАЦИЯ: Вывод метрик производительности
+            #  ОПТИМИЗАЦИЯ: Вывод метрик производительности
             get_metrics().log_summary()
 
         except Exception as e:
@@ -547,7 +546,7 @@ class SyncOrchestrator:
 
     def _process_batch(self, batch: List[Dict[str, Any]]) -> tuple[int, int]:
         """
-        ✅ BATCH ОПТИМИЗАЦИЯ: Обрабатывает батч записей с предварительным поиском
+         BATCH ОПТИМИЗАЦИЯ: Обрабатывает батч записей с предварительным поиском
 
         Ускорение достигается за счет:
         - Batch поиск контактов (1 запрос вместо N)
@@ -568,11 +567,11 @@ class SyncOrchestrator:
         synced_count = 0
         error_count = 0
 
-        # 1️⃣ Собираем телефоны и ident_id для batch поиска
+        # 1. Собираем телефоны и ident_id для batch поиска
         phones = list(set(t['contact']['phone'] for t in batch))
         ident_ids = [t['unique_id'] for t in batch]
 
-        # 2️⃣ Делаем batch поиск (2 запроса вместо N*2)
+        # 2. Делаем batch поиск (2 запроса вместо N*2)
         logger.debug(f"Batch поиск: {len(phones)} телефонов, {len(ident_ids)} сделок")
 
         with Timer("batch_find_contacts"):
@@ -588,7 +587,7 @@ class SyncOrchestrator:
             f"сделок найдено {sum(1 for d in deals_map.values() if d)}/{len(ident_ids)}"
         )
 
-        # 3️⃣ Обрабатываем каждую запись (используем существующую логику)
+        # 3. Обрабатываем каждую запись (используем существующую логику)
         # Batch поиск уже сократил запросы с 2N до 2, остальные операции
         # (создание/обновление) выполняются последовательно
         for transformed in batch:
@@ -647,12 +646,12 @@ class SyncOrchestrator:
 
                 if success:
                     self.queue.mark_completed(unique_id)
-                    logger.info(f"✅ {unique_id} успешно обработан из очереди")
+                    logger.info(f" {unique_id} успешно обработан из очереди")
 
             except Exception as e:
                 error_msg = str(e)
                 self.queue.mark_failed(unique_id, error_msg)
-                logger.warning(f"❌ {unique_id} не обработан: {error_msg}")
+                logger.warning(f"ERROR: {unique_id} не обработан: {error_msg}")
 
         if retry_count > 0:
             logger.info(f"Обработано из очереди: {retry_count}")
@@ -671,21 +670,27 @@ class SyncOrchestrator:
         Args:
             interval_minutes: Интервал синхронизации (минуты)
         """
-        logger.info("\n" + "=" * 80)
+        logger.info("=" * 80)
         logger.info(f"Запуск синхронизации по расписанию (каждые {interval_minutes} мин)")
         logger.info("Для остановки нажмите Ctrl+C")
         logger.info("=" * 80)
 
-        # Настраиваем расписание
-        schedule.every(interval_minutes).minutes.do(self.sync_once)
+        interval_seconds = interval_minutes * 60
 
-        # Выполняем первую синхронизацию сразу
-        self.sync_once()
-
-        # Цикл обработки расписания
         while not self.should_stop:
-            schedule.run_pending()
-            time.sleep(1)
+            try:
+                self.sync_once()
+            except Exception as e:
+                logger.error(f"Ошибка во время синхронизации: {e}", exc_info=True)
+
+            if self.should_stop:
+                break
+
+            # Ждем до следующей синхронизации
+            for _ in range(interval_seconds):
+                if self.should_stop:
+                    break
+                time.sleep(1)
 
     def cleanup(self):
         """Очистка ресурсов"""
@@ -794,16 +799,16 @@ def main():
 
     except ConfigValidationError as e:
         if logger:
-            logger.error(f"\n❌ Ошибка конфигурации:\n{e}")
+            logger.error(f"\nERROR: Ошибка конфигурации:\n{e}")
         else:
-            print(f"\n❌ Ошибка конфигурации:\n{e}")
+            print(f"\nERROR: Ошибка конфигурации:\n{e}")
         sys.exit(1)
 
     except Exception as e:
         if logger:
-            logger.error(f"\n❌ Критическая ошибка: {e}", exc_info=True)
+            logger.error(f"\nERROR: Критическая ошибка: {e}", exc_info=True)
         else:
-            print(f"\n❌ Критическая ошибка: {e}")
+            print(f"\nERROR: Критическая ошибка: {e}")
             import traceback
             traceback.print_exc()
         sys.exit(1)
