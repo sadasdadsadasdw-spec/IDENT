@@ -67,10 +67,11 @@ Write-Host "Building EXE..." -ForegroundColor Cyan
 Write-Host ""
 
 # Build with PyInstaller
+# Note: No --windowed flag for service mode (prevents double process issue)
 & pyinstaller `
     --name="ident_sync" `
     --onefile `
-    --windowed `
+    --console `
     --add-data="config.ini;." `
     --hidden-import=pyodbc `
     --hidden-import=requests `
