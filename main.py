@@ -308,19 +308,25 @@ class SyncOrchestrator:
 
             if existing_lead:
                 lead_id = self._safe_int(existing_lead['ID'], 'LeadID')
-                logger.info(f"Лид {lead_id} найден, конвертируем (контакт: {contact_id})")
+                lead_contact_id = existing_lead.get('CONTACT_ID')
 
-                deal_id = self.b24.convert_lead(lead_id, contact_id)
+                if lead_contact_id:
+                    contact_from_lead = self._safe_int(lead_contact_id, 'ContactID')
+                    logger.info(f"Лид {lead_id} с контактом {contact_from_lead}, конвертируем")
 
-                if deal_id:
-                    deal_data['uf_crm_ident_id'] = unique_id
-                    self.b24.update_deal(deal_id, deal_data)
-                    logger.info(f"Сделка {deal_id} обновлена после конвертации")
+                    deal_id = self.b24.convert_lead(lead_id, contact_from_lead)
 
-                    self._sync_treatment_plan(deal_id, deal_data, unique_id)
-                    return True
+                    if deal_id:
+                        deal_data['uf_crm_ident_id'] = unique_id
+                        self.b24.update_deal(deal_id, deal_data)
+                        logger.info(f"Сделка {deal_id} обновлена после конвертации")
+
+                        self._sync_treatment_plan(deal_id, deal_data, unique_id)
+                        return True
+                    else:
+                        logger.warning(f"Конвертация лида {lead_id} не вернула ID сделки")
                 else:
-                    logger.warning(f"Конвертация лида {lead_id} не вернула ID сделки")
+                    logger.info(f"Лид {lead_id} без контакта, пропускаем")
 
             deals_without_ident = self.b24.find_deals_by_contact_without_ident_id(
                 contact_id,
