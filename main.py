@@ -255,13 +255,14 @@ class SyncOrchestrator:
         """
         Синхронизирует одну запись в Bitrix24
 
-        ЛОГИКА ПОИСКА И ОБНОВЛЕНИЯ:
+        НОВАЯ УПРОЩЕННАЯ ЛОГИКА:
         1. Ищем сделку по IDENT ID
            - Если найдена и НЕ закрыта → обновляем
-           - Если найдена и закрыта (Успешно/Неуспешно) → игнорируем, создаем новую
-        2. Ищем контакт по телефону + ФИО → если не найден, создаем
-        3. Ищем сделку без IDENT ID для контакта → если найдена, автопривязываем
-        4. Если сделки нет → создаем новую
+           - Если найдена и закрыта → игнорируем, идем дальше
+        2. Ищем контакт ТОЛЬКО по телефону (первый) → если не найден, создаем
+        3. Ищем лид по телефону → если найден, конвертируем в сделку + обновляем
+        4. Ищем сделку без IDENT ID для контакта → если найдена, автопривязываем
+        5. Создаем новую сделку
 
         Args:
             transformed_data: Преобразованные данные
@@ -275,26 +276,22 @@ class SyncOrchestrator:
 
         try:
             phone = contact_data['phone']
-            name = contact_data.get('name', '')
-            last_name = contact_data.get('last_name', '')
-            second_name = contact_data.get('second_name', '')
 
             # ШАГ 1: Поиск сделки по IDENT ID
             existing_deal = self.b24.find_deal_by_ident_id(unique_id)
-            should_create_new = False
 
             if existing_deal:
                 # Сделка с IDENT ID найдена
                 deal_id = self._safe_int(existing_deal['ID'], 'DealID')
                 current_stage = existing_deal.get('STAGE_ID')
 
-                # Если сделка в финальной стадии - игнорируем её
+                # Если сделка в финальной стадии - игнорируем её и идем дальше
                 if StageMapper.is_stage_final(current_stage):
                     logger.info(
                         f"IGNORE: Сделка {deal_id} с IDENT ID {unique_id} уже закрыта "
-                        f"(стадия '{current_stage}'). Игнорируем и создаем новую сделку."
+                        f"(стадия '{current_stage}'). Игнорируем."
                     )
-                    should_create_new = True
+                    # Не возвращаем, продолжаем искать/создавать
                 else:
                     # Обновляем существующую открытую сделку
                     if StageMapper.is_stage_protected(current_stage):
@@ -318,62 +315,76 @@ class SyncOrchestrator:
                             stage_only = {'stage_id': deal_data.get('stage_id')}
                             if stage_only['stage_id']:
                                 self.b24.update_deal(deal_id, stage_only)
-            else:
-                should_create_new = True
 
-            # Если сделка не найдена или закрыта - создаем новую
-            if should_create_new:
-                # ШАГ 2: Сделка с IDENT ID не найдена - ищем контакт
-                contact_id = self._find_or_create_contact(phone, name, last_name, second_name, contact_data)
+                    # Синхронизируем план лечения и выходим
+                    self._sync_treatment_plan(deal_id, deal_data, unique_id)
+                    return True
 
-                # ШАГ 3: Ищем сделку без IDENT ID для этого контакта
-                deals_without_ident = self.b24.find_deals_by_contact_without_ident_id(
-                    contact_id,
-                    exclude_final=True
-                )
+            # ШАГ 2: Ищем/создаем контакт ТОЛЬКО по телефону
+            contact_id = self._find_or_create_contact(phone, contact_data)
 
-                if deals_without_ident:
-                    # Нашли сделку без IDENT ID - привязываем
-                    deal = deals_without_ident[0]  # Берем самую свежую (уже отсортировано)
-                    deal_id = self._safe_int(deal['ID'], 'DealID')
+            # ШАГ 3: Ищем лид по телефону
+            existing_lead = self.b24.find_lead_by_phone(phone)
 
-                    if len(deals_without_ident) > 1:
-                        logger.warning(
-                            f"МНОЖЕСТВЕННЫЕ СДЕЛКИ: Найдено {len(deals_without_ident)} открытых сделок "
-                            f"без IDENT ID для контакта {contact_id}. "
-                            f"Привязываем к самой свежей: {deal_id}. "
-                            f"Остальные: {[d['ID'] for d in deals_without_ident[1:]]}"
-                        )
+            if existing_lead:
+                # Лид найден - конвертируем в сделку
+                lead_id = self._safe_int(existing_lead['ID'], 'LeadID')
+                logger.info(f"ЛИД НАЙДЕН: ID={lead_id}, конвертируем в сделку (контакт: {contact_id})")
 
-                    logger.info(
-                        f"АВТОПРИВЯЗКА: Сделка {deal_id} привязана к {unique_id} "
-                        f"(дата создания: {deal.get('DATE_CREATE')})"
-                    )
+                # Конвертируем лид → получаем ID сделки
+                deal_id = self.b24.convert_lead(lead_id, contact_id)
 
-                    # Обновляем сделку, добавляя IDENT ID и все данные
+                if deal_id:
+                    # Обновляем созданную сделку данными из IDENT (ОБЯЗАТЕЛЬНО добавляем IDENT ID!)
                     deal_data['uf_crm_ident_id'] = unique_id
                     self.b24.update_deal(deal_id, deal_data)
-                else:
-                    # ШАГ 4: Сделки без IDENT ID не найдено - создаем новую
-                    logger.info(f"Создаем новую сделку для контакта {contact_id}")
-                    deal_id = self.b24.create_deal(deal_data, contact_id)
-                    logger.info(f"Создана сделка {deal_id} для {unique_id}")
+                    logger.info(f"Сделка {deal_id} обновлена после конвертации лида {lead_id}")
 
-            # Синхронизируем план лечения (оптимизированно с throttling и кешем)
-            card_number = deal_data.get('UF_CRM_1769083581481') or deal_data.get('uf_crm_card_number')
-            if card_number and deal_id:
-                try:
-                    # Используем оптимизированный менеджер (с кешем и throttling)
-                    self.treatment_plan_manager.sync_plan_for_deal(deal_id, card_number, force=False)
-                except Exception as e:
-                    logger.warning(f"Ошибка синхронизации плана лечения для сделки {deal_id}: {e}")
-                    # Не прерываем синхронизацию из-за ошибки плана лечения
-            elif deal_id and not card_number:
-                logger.debug(
-                    f"WARNING: CardNumber отсутствует для сделки {deal_id} ({unique_id}), "
-                    f"план лечения не синхронизирован"
+                    # Синхронизируем план лечения и выходим
+                    self._sync_treatment_plan(deal_id, deal_data, unique_id)
+                    return True
+                else:
+                    logger.warning(f"Конвертация лида {lead_id} не создала сделку, продолжаем поиск")
+
+            # ШАГ 4: Ищем сделку без IDENT ID для этого контакта
+            deals_without_ident = self.b24.find_deals_by_contact_without_ident_id(
+                contact_id,
+                exclude_final=True
+            )
+
+            if deals_without_ident:
+                # Нашли сделку без IDENT ID - привязываем
+                deal = deals_without_ident[0]  # Берем самую свежую (уже отсортировано)
+                deal_id = self._safe_int(deal['ID'], 'DealID')
+
+                if len(deals_without_ident) > 1:
+                    logger.warning(
+                        f"МНОЖЕСТВЕННЫЕ СДЕЛКИ: Найдено {len(deals_without_ident)} открытых сделок "
+                        f"без IDENT ID для контакта {contact_id}. "
+                        f"Привязываем к самой свежей: {deal_id}. "
+                        f"Остальные: {[d['ID'] for d in deals_without_ident[1:]]}"
+                    )
+
+                logger.info(
+                    f"АВТОПРИВЯЗКА: Сделка {deal_id} привязана к {unique_id} "
+                    f"(дата создания: {deal.get('DATE_CREATE')})"
                 )
 
+                # ОБЯЗАТЕЛЬНО добавляем IDENT ID и обновляем все данные
+                deal_data['uf_crm_ident_id'] = unique_id
+                self.b24.update_deal(deal_id, deal_data)
+
+                # Синхронизируем план лечения и выходим
+                self._sync_treatment_plan(deal_id, deal_data, unique_id)
+                return True
+
+            # ШАГ 5: Сделки не найдено - создаем новую
+            logger.info(f"Создаем новую сделку для контакта {contact_id}")
+            deal_id = self.b24.create_deal(deal_data, contact_id)
+            logger.info(f"Создана сделка {deal_id} для {unique_id}")
+
+            # Синхронизируем план лечения
+            self._sync_treatment_plan(deal_id, deal_data, unique_id)
             return True
 
         except Bitrix24Error as e:
@@ -383,52 +394,58 @@ class SyncOrchestrator:
             logger.error(f"Неожиданная ошибка синхронизации {unique_id}: {e}", exc_info=True)
             raise
 
-    def _find_or_create_contact(
-        self,
-        phone: str,
-        name: str,
-        last_name: str,
-        second_name: str,
-        contact_data: dict
-    ) -> int:
+    def _sync_treatment_plan(self, deal_id: int, deal_data: dict, unique_id: str) -> None:
         """
-        Ищет или создает контакт с поддержкой семей (несколько контактов с одним телефоном)
+        Синхронизирует план лечения для сделки
+
+        Args:
+            deal_id: ID сделки
+            deal_data: Данные сделки (для получения номера карты)
+            unique_id: IDENT ID (для логирования)
+        """
+        card_number = deal_data.get('UF_CRM_1769083581481') or deal_data.get('uf_crm_card_number')
+
+        if card_number and deal_id:
+            try:
+                # Используем оптимизированный менеджер (с кешем и throttling)
+                self.treatment_plan_manager.sync_plan_for_deal(deal_id, card_number, force=False)
+            except Exception as e:
+                logger.warning(f"Ошибка синхронизации плана лечения для сделки {deal_id}: {e}")
+                # Не прерываем синхронизацию из-за ошибки плана лечения
+        elif deal_id and not card_number:
+            logger.debug(
+                f"WARNING: CardNumber отсутствует для сделки {deal_id} ({unique_id}), "
+                f"план лечения не синхронизирован"
+            )
+
+    def _find_or_create_contact(self, phone: str, contact_data: dict) -> int:
+        """
+        Ищет или создает контакт ТОЛЬКО по телефону (упрощенная логика)
+
+        Возвращает первый найденный контакт с этим телефоном.
+        Допускаются дубли сделок на один контакт.
 
         Args:
             phone: Номер телефона
-            name: Имя
-            last_name: Фамилия
-            second_name: Отчество
             contact_data: Полные данные контакта
 
         Returns:
             ID контакта
         """
-        # Ищем контакт по ТОЧНОМУ совпадению ФИО + телефон
-        existing_contact = self.b24.find_contact_by_phone_and_name(
-            phone, name, last_name, second_name
-        )
+        # Ищем контакт ТОЛЬКО по телефону (первый попавшийся)
+        existing_contact = self.b24.find_contact_by_phone(phone)
 
         if existing_contact:
-            # Найден контакт с точным совпадением ФИО
+            # Найден контакт с этим телефоном
             contact_id = self._safe_int(existing_contact['ID'], 'ContactID')
-            logger.info(f"Найден контакт {contact_id}: {last_name} {name} {second_name or ''}")
+            logger.info(
+                f"Найден контакт {contact_id} для телефона {phone} "
+                f"({existing_contact.get('LAST_NAME', '')} {existing_contact.get('NAME', '')})"
+            )
             return contact_id
 
-        # ТОЧНОГО совпадения нет - проверяем есть ли другие контакты с этим телефоном (семья)
-        contacts_by_phone = self.b24.find_all_contacts_by_phone(phone)
-
-        if contacts_by_phone:
-            # Есть контакты с этим телефоном, но с другими ФИО (члены семьи)
-            logger.info(
-                f"Найдено {len(contacts_by_phone)} контактов с телефоном {phone}. "
-                f"Создаем новый контакт для {last_name} {name} {second_name or ''} (член семьи)."
-            )
-        else:
-            # Вообще нет контактов с этим телефоном
-            logger.info(f"Создаем первый контакт для телефона {phone}")
-
-        # Создаем новый контакт
+        # Контакт не найден - создаем новый
+        logger.info(f"Создаем новый контакт для телефона {phone}")
         contact_id = self.b24.create_contact(contact_data)
         return contact_id
 
