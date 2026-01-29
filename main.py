@@ -256,6 +256,12 @@ class SyncOrchestrator:
         """
         Синхронизирует одну запись в Bitrix24
 
+        НОВАЯ ЛОГИКА (упрощенная):
+        1. Ищем сделку по IDENT ID → если найдена, обновляем
+        2. Ищем контакт по телефону + ФИО → если не найден, создаем
+        3. Ищем сделку без IDENT ID для контакта → если найдена, привязываем
+        4. Если сделки нет → создаем новую
+
         Args:
             transformed_data: Преобразованные данные
 
@@ -267,61 +273,28 @@ class SyncOrchestrator:
         deal_data = transformed_data['deal']
 
         try:
-            # 1. Ищем/создаем контакт
-            contact_id = None
             phone = contact_data['phone']
             name = contact_data.get('name', '')
             last_name = contact_data.get('last_name', '')
             second_name = contact_data.get('second_name', '')
 
-            # Ищем контакт по телефону И ФИО
-            existing_contact = self.b24.find_contact_by_phone_and_name(
-                phone, name, last_name, second_name
-            )
-
-            if existing_contact:
-                contact_id = self._safe_int(existing_contact['ID'], 'ContactID')
-                logger.debug(f"Найден существующий контакт: {contact_id}")
-
-            # ВСЕГДА ищем лид (даже если контакт уже есть!)
-            existing_lead = self.b24.find_lead_by_phone_and_name(
-                phone, name, last_name
-            )
-
-            if existing_lead:
-                lead_status = existing_lead.get('STATUS_ID', '')
-                lead_id = self._safe_int(existing_lead['ID'], 'LeadID')
-
-                # Конвертируем лид если он не в финальном статусе
-                if lead_status in ['CONVERTED', 'JUNK']:
-                    logger.info(
-                        f"SKIP: Лид ID={lead_id} в финальном статусе '{lead_status}' "
-                        f"- пропускаем конвертацию"
-                    )
-                else:
-                    logger.info(f"Найден лид ID={lead_id} (статус: {lead_status}) для телефона {phone[:10]}...")
-                    logger.info(f"Перемещаем лид в стадию CONVERTED")
-                    self.b24.update_lead_status(lead_id, 'CONVERTED')
-
-            # Создаем контакт если еще не был найден
-            if not contact_id:
-                contact_id = self.b24.create_contact(contact_data)
-
-            # 2. Создаем/обновляем сделку
+            # ШАГ 1: Поиск сделки по IDENT ID
             existing_deal = self.b24.find_deal_by_ident_id(unique_id)
 
             if existing_deal:
+                # Сделка с IDENT ID найдена - обновляем
                 deal_id = self._safe_int(existing_deal['ID'], 'DealID')
                 current_stage = existing_deal.get('STAGE_ID')
 
-                # Проверяем финальную стадию - создаем НОВУЮ сделку
+                # Проверяем финальную стадию
                 if StageMapper.is_stage_final(current_stage):
+                    # Сделка закрыта - создаем новую с суффиксом
                     logger.info(
-                        f"REOPEN: Сделка {deal_id} в финальной стадии '{current_stage}' "
-                        f"(WON/LOSE) - создаем новую сделку"
+                        f"REOPEN: Сделка {deal_id} закрыта (стадия '{current_stage}'). "
+                        f"Создаем новую сделку."
                     )
 
-                    # Генерируем новый unique_id с суффиксом (_2, _3, ...) или timestamp
+                    # Генерируем новый unique_id с суффиксом (_2, _3, ...)
                     base_unique_id = unique_id
                     counter = 2
                     found_free_id = False
@@ -334,21 +307,18 @@ class SyncOrchestrator:
                             # Свободный ID найден
                             unique_id = new_unique_id
                             deal_data['uf_crm_ident_id'] = new_unique_id
-                            logger.info(f"Новый unique_id: {new_unique_id}")
                             found_free_id = True
                             break
-                        else:
-                            # Проверяем, не закрыта ли эта сделка тоже
-                            if not StageMapper.is_stage_final(check_deal.get('STAGE_ID')):
-                                # Найдена открытая сделка - обновляем её
-                                unique_id = new_unique_id
-                                deal_data['uf_crm_ident_id'] = new_unique_id
-                                existing_deal = check_deal
-                                deal_id = self._safe_int(check_deal['ID'], 'DealID')
-                                current_stage = check_deal.get('STAGE_ID')
-                                logger.info(f"Найдена открытая сделка {deal_id} с ID {new_unique_id}")
-                                found_free_id = True
-                                break
+                        elif not StageMapper.is_stage_final(check_deal.get('STAGE_ID')):
+                            # Найдена открытая сделка с этим суффиксом - обновляем её
+                            unique_id = new_unique_id
+                            deal_data['uf_crm_ident_id'] = new_unique_id
+                            existing_deal = check_deal
+                            deal_id = self._safe_int(check_deal['ID'], 'DealID')
+                            current_stage = check_deal.get('STAGE_ID')
+                            logger.info(f"Найдена открытая сделка {deal_id} с ID {new_unique_id}")
+                            found_free_id = True
+                            break
 
                         counter += 1
 
@@ -363,36 +333,71 @@ class SyncOrchestrator:
                         )
                         existing_deal = None  # Создаем новую сделку
 
-                    # Если нашли открытую сделку - обновляем, иначе создаем новую
-                    if not existing_deal or StageMapper.is_stage_final(existing_deal.get('STAGE_ID')):
-                        deal_id = self.b24.create_deal(deal_data, contact_id)
-                        logger.info(f"Создана новая сделка {deal_id} для {unique_id} (старая сделка закрыта)")
-                        return True
-
-                if StageMapper.is_stage_protected(current_stage):
-                    logger.info(
-                        f"PROTECTED: Сделка {deal_id} имеет защищенную стадию '{current_stage}' "
-                        f"- обновляем только данные, стадию не меняем"
-                    )
-                    deal_data_copy = deal_data.copy()
-                    deal_data_copy.pop('stage_id', None)
-                    if self.enable_update_existing:
-                        self.b24.update_deal(deal_id, deal_data_copy)
-                    else:
-                        logger.debug(f"Обновление данных отключено для {deal_id}")
+                # Если сделка все еще финальная - нужен контакт для создания новой
+                if not existing_deal or StageMapper.is_stage_final(existing_deal.get('STAGE_ID')):
+                    # Нужно найти/создать контакт
+                    contact_id = self._find_or_create_contact(phone, name, last_name, second_name, contact_data)
+                    deal_id = self.b24.create_deal(deal_data, contact_id)
+                    logger.info(f"Создана новая сделка {deal_id} для {unique_id}")
                 else:
-                    if self.enable_update_existing:
-                        logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
-                        self.b24.update_deal(deal_id, deal_data)
+                    # Обновляем существующую сделку
+                    if StageMapper.is_stage_protected(current_stage):
+                        # Защищенная стадия - не меняем stage
+                        logger.info(
+                            f"PROTECTED: Сделка {deal_id} в защищенной стадии '{current_stage}'. "
+                            f"Обновляем данные без изменения стадии."
+                        )
+                        deal_data_copy = deal_data.copy()
+                        deal_data_copy.pop('stage_id', None)
+                        if self.enable_update_existing:
+                            self.b24.update_deal(deal_id, deal_data_copy)
                     else:
-                        logger.info(f"Обновляем стадию сделки {deal_id} для {unique_id}")
-                        stage_only = {'stage_id': deal_data.get('stage_id')}
-                        if stage_only['stage_id']:
-                            self.b24.update_deal(deal_id, stage_only)
+                        # Обычное обновление
+                        if self.enable_update_existing:
+                            logger.info(f"Обновляем сделку {deal_id} для {unique_id}")
+                            self.b24.update_deal(deal_id, deal_data)
+                        else:
+                            # Обновляем только стадию
+                            logger.info(f"Обновляем стадию сделки {deal_id}")
+                            stage_only = {'stage_id': deal_data.get('stage_id')}
+                            if stage_only['stage_id']:
+                                self.b24.update_deal(deal_id, stage_only)
             else:
-                # Создаем новую сделку
-                deal_id = self.b24.create_deal(deal_data, contact_id)
-                logger.info(f"Создана сделка {deal_id} для {unique_id}")
+                # ШАГ 2: Сделка с IDENT ID не найдена - ищем контакт
+                contact_id = self._find_or_create_contact(phone, name, last_name, second_name, contact_data)
+
+                # ШАГ 3: Ищем сделку без IDENT ID для этого контакта
+                deals_without_ident = self.b24.find_deals_by_contact_without_ident_id(
+                    contact_id,
+                    exclude_final=True
+                )
+
+                if deals_without_ident:
+                    # Нашли сделку без IDENT ID - привязываем
+                    deal = deals_without_ident[0]  # Берем самую свежую (уже отсортировано)
+                    deal_id = self._safe_int(deal['ID'], 'DealID')
+
+                    if len(deals_without_ident) > 1:
+                        logger.warning(
+                            f"МНОЖЕСТВЕННЫЕ СДЕЛКИ: Найдено {len(deals_without_ident)} открытых сделок "
+                            f"без IDENT ID для контакта {contact_id}. "
+                            f"Привязываем к самой свежей: {deal_id}. "
+                            f"Остальные: {[d['ID'] for d in deals_without_ident[1:]]}"
+                        )
+
+                    logger.info(
+                        f"АВТОПРИВЯЗКА: Сделка {deal_id} привязана к {unique_id} "
+                        f"(дата создания: {deal.get('DATE_CREATE')})"
+                    )
+
+                    # Обновляем сделку, добавляя IDENT ID и все данные
+                    deal_data['uf_crm_ident_id'] = unique_id
+                    self.b24.update_deal(deal_id, deal_data)
+                else:
+                    # ШАГ 4: Сделки без IDENT ID не найдено - создаем новую
+                    logger.info(f"Создаем новую сделку для контакта {contact_id}")
+                    deal_id = self.b24.create_deal(deal_data, contact_id)
+                    logger.info(f"Создана сделка {deal_id} для {unique_id}")
 
             # Синхронизируем план лечения (оптимизированно с throttling и кешем)
             card_number = deal_data.get('UF_CRM_1769083581481') or deal_data.get('uf_crm_card_number')
@@ -417,6 +422,55 @@ class SyncOrchestrator:
         except Exception as e:
             logger.error(f"Неожиданная ошибка синхронизации {unique_id}: {e}", exc_info=True)
             raise
+
+    def _find_or_create_contact(
+        self,
+        phone: str,
+        name: str,
+        last_name: str,
+        second_name: str,
+        contact_data: dict
+    ) -> int:
+        """
+        Ищет или создает контакт с поддержкой семей (несколько контактов с одним телефоном)
+
+        Args:
+            phone: Номер телефона
+            name: Имя
+            last_name: Фамилия
+            second_name: Отчество
+            contact_data: Полные данные контакта
+
+        Returns:
+            ID контакта
+        """
+        # Ищем контакт по ТОЧНОМУ совпадению ФИО + телефон
+        existing_contact = self.b24.find_contact_by_phone_and_name(
+            phone, name, last_name, second_name
+        )
+
+        if existing_contact:
+            # Найден контакт с точным совпадением ФИО
+            contact_id = self._safe_int(existing_contact['ID'], 'ContactID')
+            logger.info(f"Найден контакт {contact_id}: {last_name} {name} {second_name or ''}")
+            return contact_id
+
+        # ТОЧНОГО совпадения нет - проверяем есть ли другие контакты с этим телефоном (семья)
+        contacts_by_phone = self.b24.find_all_contacts_by_phone(phone)
+
+        if contacts_by_phone:
+            # Есть контакты с этим телефоном, но с другими ФИО (члены семьи)
+            logger.info(
+                f"Найдено {len(contacts_by_phone)} контактов с телефоном {phone}. "
+                f"Создаем новый контакт для {last_name} {name} {second_name or ''} (член семьи)."
+            )
+        else:
+            # Вообще нет контактов с этим телефоном
+            logger.info(f"Создаем первый контакт для телефона {phone}")
+
+        # Создаем новый контакт
+        contact_id = self.b24.create_contact(contact_data)
+        return contact_id
 
     def sync_treatment_plan(self, deal_id: int, card_number: str, force: bool = False):
         """
