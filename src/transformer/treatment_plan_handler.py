@@ -34,9 +34,62 @@ class TreatmentPlanTransformer:
     }
 
     @staticmethod
+    def transform_plans(raw_data: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Преобразует сырые данные ВСЕХ планов лечения в структурированный JSON
+
+        Args:
+            raw_data: Список строк из SQL запроса (может содержать несколько планов)
+
+        Returns:
+            Словарь с массивом планов {"plans": [...]} или None если данных нет
+        """
+        if not raw_data:
+            logger.warning("Нет данных для преобразования планов лечения")
+            return None
+
+        # Группируем строки по PlanID
+        plans_by_id = defaultdict(list)
+        for row in raw_data:
+            plan_id = row.get('PlanID')
+            if plan_id:
+                plans_by_id[plan_id].append(row)
+
+        if not plans_by_id:
+            logger.error("Нет валидных PlanID в данных")
+            return None
+
+        # Преобразуем каждый план отдельно
+        transformed_plans = []
+        for plan_id in sorted(plans_by_id.keys(), reverse=True):  # Сортируем по ID (новые первыми)
+            plan_rows = plans_by_id[plan_id]
+            plan = TreatmentPlanTransformer._transform_single_plan(plan_rows)
+            if plan:
+                transformed_plans.append(plan)
+
+        if not transformed_plans:
+            logger.warning("Не удалось преобразовать ни один план")
+            return None
+
+        # Возвращаем массив планов
+        result = {
+            'plans': transformed_plans,
+            'total_plans': len(transformed_plans),
+            'active_plans': sum(1 for p in transformed_plans if p.get('active', False))
+        }
+
+        logger.info(
+            f"Преобразовано {len(transformed_plans)} планов: "
+            f"{result['active_plans']} активных"
+        )
+
+        return result
+
+    @staticmethod
     def transform_plan(raw_data: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
         Преобразует сырые данные плана лечения в структурированный JSON
+        (LEGACY метод для обратной совместимости - обрабатывает только первый план)
 
         Args:
             raw_data: Список строк из SQL запроса (одна строка = одна услуга)
@@ -46,6 +99,26 @@ class TreatmentPlanTransformer:
         """
         if not raw_data:
             logger.warning("Нет данных для преобразования плана лечения")
+            return None
+
+        # Для обратной совместимости - используем новый метод и возвращаем первый план
+        result = TreatmentPlanTransformer.transform_plans(raw_data)
+        if result and result.get('plans'):
+            return result['plans'][0]
+        return None
+
+    @staticmethod
+    def _transform_single_plan(raw_data: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """
+        Преобразует данные ОДНОГО плана (внутренний метод)
+
+        Args:
+            raw_data: Список строк одного плана
+
+        Returns:
+            Словарь с иерархической структурой плана или None
+        """
+        if not raw_data:
             return None
 
         # Берем метаданные из первой строки (они одинаковые для всех строк)
@@ -86,14 +159,6 @@ class TreatmentPlanTransformer:
         status_counts = {'done_paid': 0, 'done': 0, 'pending': 0}
 
         for row in raw_data:
-            # КРИТИЧНО: Пропускаем строки из других планов (если SQL вернул несколько планов)
-            if row.get('PlanID') != plan_id:
-                logger.warning(
-                    f"Обнаружена строка из другого плана (PlanID={row.get('PlanID')}) "
-                    f"при обработке плана {plan_id}, пропускаем"
-                )
-                continue
-
             stage_id = row.get('StageID')
             element_id = row.get('ElementID')
             service_id = row.get('ServiceID')
@@ -251,9 +316,10 @@ class TreatmentPlanTransformer:
     def calculate_hash(plan: Dict[str, Any]) -> str:
         """
         Вычисляет MD5 хеш плана для отслеживания изменений
+        Работает как с одиночным планом, так и с массивом планов
 
         Args:
-            plan: Структура плана
+            plan: Структура плана или {"plans": [...]}
 
         Returns:
             MD5 хеш в hex формате

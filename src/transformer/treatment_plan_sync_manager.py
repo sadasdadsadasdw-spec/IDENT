@@ -251,32 +251,32 @@ class TreatmentPlanSyncManager:
             if not force and not self.should_update(card_number):
                 return False
 
-            # Получаем план из БД
+            # Получаем ВСЕ планы из БД
             raw_plan_data = self.db.get_treatment_plans_by_card_number(card_number)
 
             if not raw_plan_data:
-                logger.debug(f"План лечения не найден для карты {card_number}")
+                logger.debug(f"Планы лечения не найдены для карты {card_number}")
                 return False
 
-            # Преобразуем в структурированный формат
-            plan = TreatmentPlanTransformer.transform_plan(raw_plan_data)
+            # Преобразуем в структурированный формат (массив планов)
+            plans_data = TreatmentPlanTransformer.transform_plans(raw_plan_data)
 
-            if not plan:
-                logger.warning(f"Не удалось преобразовать план для карты {card_number}")
+            if not plans_data:
+                logger.warning(f"Не удалось преобразовать планы для карты {card_number}")
                 return False
 
             # Проверяем размер
-            is_valid, size_kb = TreatmentPlanTransformer.validate_size(plan)
+            is_valid, size_kb = TreatmentPlanTransformer.validate_size(plans_data)
             if not is_valid:
                 logger.error(
-                    f"⚠️ План превышает 60KB ({size_kb}KB) для карты {card_number} "
+                    f"⚠️ Планы превышают 60KB ({size_kb}KB) для карты {card_number} "
                     f"- пропускаем"
                 )
                 self.stats['errors'] += 1
                 return False
 
             # Вычисляем хеш
-            new_hash = TreatmentPlanTransformer.calculate_hash(plan)
+            new_hash = TreatmentPlanTransformer.calculate_hash(plans_data)
 
             # Проверяем кеш (если не force)
             if not force:
@@ -289,22 +289,22 @@ class TreatmentPlanSyncManager:
                     self.stats['cache_hits'] += 1
                     return False
 
-            # План изменился или force - обновляем
-            plan_json = TreatmentPlanTransformer.to_json_string(plan, minify=True)
+            # Планы изменились или force - обновляем
+            plans_json = TreatmentPlanTransformer.to_json_string(plans_data, minify=True)
 
             # Валидация JSON перед сохранением
             try:
-                json.loads(plan_json)  # Проверяем что JSON валидный
+                json.loads(plans_json)  # Проверяем что JSON валидный
             except json.JSONDecodeError as e:
                 logger.error(
                     f"⚠️ Невалидный JSON для карты {card_number}: {e}. "
-                    f"План не будет сохранен."
+                    f"Планы не будут сохранены."
                 )
                 self.stats['errors'] += 1
                 return False
 
             update_data = {
-                'uf_crm_treatment_plan': plan_json,
+                'uf_crm_treatment_plan': plans_json,
                 'uf_crm_treatment_plan_hash': new_hash
             }
 
@@ -315,8 +315,8 @@ class TreatmentPlanSyncManager:
 
             self.stats['updated'] += 1
             logger.info(
-                f"✅ План обновлен для сделки {deal_id}: "
-                f"план_id={plan['plan_id']}, услуг={plan['summary']['total_services']}, "
+                f"✅ Планы обновлены для сделки {deal_id}: "
+                f"всего={plans_data['total_plans']}, активных={plans_data['active_plans']}, "
                 f"размер={size_kb}KB, hash={new_hash[:8]}..."
             )
 
@@ -369,42 +369,42 @@ class TreatmentPlanSyncManager:
                     result['skipped'] += len(deal_ids)
                     continue
 
-                # Получаем план из БД один раз
+                # Получаем ВСЕ планы из БД один раз
                 raw_plan_data = self.db.get_treatment_plans_by_card_number(card_number)
 
                 if not raw_plan_data:
-                    logger.debug(f"План не найден для карты {card_number}")
+                    logger.debug(f"Планы не найдены для карты {card_number}")
                     result['skipped'] += len(deal_ids)
                     continue
 
-                # Преобразуем
-                plan = TreatmentPlanTransformer.transform_plan(raw_plan_data)
-                if not plan:
+                # Преобразуем в массив планов
+                plans_data = TreatmentPlanTransformer.transform_plans(raw_plan_data)
+                if not plans_data:
                     result['errors'] += len(deal_ids)
                     continue
 
                 # Проверяем размер
-                is_valid, size_kb = TreatmentPlanTransformer.validate_size(plan)
+                is_valid, size_kb = TreatmentPlanTransformer.validate_size(plans_data)
                 if not is_valid:
-                    logger.error(f"План превышает 60KB ({size_kb}KB) для карты {card_number}")
+                    logger.error(f"Планы превышают 60KB ({size_kb}KB) для карты {card_number}")
                     result['errors'] += len(deal_ids)
                     continue
 
                 # Вычисляем хеш
-                new_hash = TreatmentPlanTransformer.calculate_hash(plan)
+                new_hash = TreatmentPlanTransformer.calculate_hash(plans_data)
 
                 # Проверяем кеш
                 if not force:
                     cached_hash = self.cache.get_hash(card_number)
                     if cached_hash == new_hash:
-                        logger.debug(f"План для карты {card_number} не изменился")
+                        logger.debug(f"Планы для карты {card_number} не изменились")
                         result['skipped'] += len(deal_ids)
                         continue
 
                 # Обновляем все сделки с этой картой
-                plan_json = TreatmentPlanTransformer.to_json_string(plan, minify=True)
+                plans_json = TreatmentPlanTransformer.to_json_string(plans_data, minify=True)
                 update_data = {
-                    'uf_crm_treatment_plan': plan_json,
+                    'uf_crm_treatment_plan': plans_json,
                     'uf_crm_treatment_plan_hash': new_hash
                 }
 
@@ -423,7 +423,8 @@ class TreatmentPlanSyncManager:
                     result['updated'] += updated_count
 
                     logger.info(
-                        f"✅ План обновлен для {updated_count} сделок (карта {card_number}): "
+                        f"✅ Планы обновлены для {updated_count} сделок (карта {card_number}): "
+                        f"всего={plans_data['total_plans']}, активных={plans_data['active_plans']}, "
                         f"размер={size_kb}KB, hash={new_hash[:8]}..."
                     )
 
