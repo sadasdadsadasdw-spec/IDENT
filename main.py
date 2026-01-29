@@ -48,7 +48,6 @@ class SyncOrchestrator:
     """
 
     # Константы для безопасности и производительности
-    MAX_UNIQUE_ID_ATTEMPTS = 1000  # Максимум попыток найти свободный unique_id
     DB_FETCH_BATCH_SIZE = 100      # Размер батча при чтении из БД
     API_BATCH_SIZE = 20            #  BATCH ОПТИМИЗАЦИЯ: Размер батча для API запросов
 
@@ -256,10 +255,12 @@ class SyncOrchestrator:
         """
         Синхронизирует одну запись в Bitrix24
 
-        НОВАЯ ЛОГИКА (упрощенная):
-        1. Ищем сделку по IDENT ID → если найдена, обновляем
+        ЛОГИКА ПОИСКА И ОБНОВЛЕНИЯ:
+        1. Ищем сделку по IDENT ID
+           - Если найдена и НЕ закрыта → обновляем
+           - Если найдена и закрыта (Успешно/Неуспешно) → игнорируем, создаем новую
         2. Ищем контакт по телефону + ФИО → если не найден, создаем
-        3. Ищем сделку без IDENT ID для контакта → если найдена, привязываем
+        3. Ищем сделку без IDENT ID для контакта → если найдена, автопривязываем
         4. Если сделки нет → создаем новую
 
         Args:
@@ -280,67 +281,22 @@ class SyncOrchestrator:
 
             # ШАГ 1: Поиск сделки по IDENT ID
             existing_deal = self.b24.find_deal_by_ident_id(unique_id)
+            should_create_new = False
 
             if existing_deal:
-                # Сделка с IDENT ID найдена - обновляем
+                # Сделка с IDENT ID найдена
                 deal_id = self._safe_int(existing_deal['ID'], 'DealID')
                 current_stage = existing_deal.get('STAGE_ID')
 
-                # Проверяем финальную стадию
+                # Если сделка в финальной стадии - игнорируем её
                 if StageMapper.is_stage_final(current_stage):
-                    # Сделка закрыта - создаем новую с суффиксом
                     logger.info(
-                        f"REOPEN: Сделка {deal_id} закрыта (стадия '{current_stage}'). "
-                        f"Создаем новую сделку."
+                        f"IGNORE: Сделка {deal_id} с IDENT ID {unique_id} уже закрыта "
+                        f"(стадия '{current_stage}'). Игнорируем и создаем новую сделку."
                     )
-
-                    # Генерируем новый unique_id с суффиксом (_2, _3, ...)
-                    base_unique_id = unique_id
-                    counter = 2
-                    found_free_id = False
-
-                    while counter <= self.MAX_UNIQUE_ID_ATTEMPTS:
-                        new_unique_id = f"{base_unique_id}_{counter}"
-                        check_deal = self.b24.find_deal_by_ident_id(new_unique_id)
-
-                        if not check_deal:
-                            # Свободный ID найден
-                            unique_id = new_unique_id
-                            deal_data['uf_crm_ident_id'] = new_unique_id
-                            found_free_id = True
-                            break
-                        elif not StageMapper.is_stage_final(check_deal.get('STAGE_ID')):
-                            # Найдена открытая сделка с этим суффиксом - обновляем её
-                            unique_id = new_unique_id
-                            deal_data['uf_crm_ident_id'] = new_unique_id
-                            existing_deal = check_deal
-                            deal_id = self._safe_int(check_deal['ID'], 'DealID')
-                            current_stage = check_deal.get('STAGE_ID')
-                            logger.info(f"Найдена открытая сделка {deal_id} с ID {new_unique_id}")
-                            found_free_id = True
-                            break
-
-                        counter += 1
-
-                    # Если не нашли свободный ID - используем timestamp
-                    if not found_free_id:
-                        timestamp = int(datetime.now().timestamp())
-                        unique_id = f"{base_unique_id}_t{timestamp}"
-                        deal_data['uf_crm_ident_id'] = unique_id
-                        logger.warning(
-                            f"Превышен лимит попыток ({self.MAX_UNIQUE_ID_ATTEMPTS}), "
-                            f"используем timestamp: {unique_id}"
-                        )
-                        existing_deal = None  # Создаем новую сделку
-
-                # Если сделка все еще финальная - нужен контакт для создания новой
-                if not existing_deal or StageMapper.is_stage_final(existing_deal.get('STAGE_ID')):
-                    # Нужно найти/создать контакт
-                    contact_id = self._find_or_create_contact(phone, name, last_name, second_name, contact_data)
-                    deal_id = self.b24.create_deal(deal_data, contact_id)
-                    logger.info(f"Создана новая сделка {deal_id} для {unique_id}")
+                    should_create_new = True
                 else:
-                    # Обновляем существующую сделку
+                    # Обновляем существующую открытую сделку
                     if StageMapper.is_stage_protected(current_stage):
                         # Защищенная стадия - не меняем stage
                         logger.info(
@@ -363,6 +319,10 @@ class SyncOrchestrator:
                             if stage_only['stage_id']:
                                 self.b24.update_deal(deal_id, stage_only)
             else:
+                should_create_new = True
+
+            # Если сделка не найдена или закрыта - создаем новую
+            if should_create_new:
                 # ШАГ 2: Сделка с IDENT ID не найдена - ищем контакт
                 contact_id = self._find_or_create_contact(phone, name, last_name, second_name, contact_data)
 
