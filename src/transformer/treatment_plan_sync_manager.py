@@ -34,7 +34,7 @@ class TreatmentPlanCache:
 
     def __init__(self, cache_file: str = "treatment_plan_cache.json", max_entries: int = 10000):
         """
-        ✅ ОПТИМИЗАЦИЯ: Добавлен лимит размера кеша для предотвращения роста памяти
+        Инициализирует менеджер кеша с лимитом для предотвращения роста памяти
 
         Args:
             cache_file: Путь к файлу кеша
@@ -83,7 +83,7 @@ class TreatmentPlanCache:
 
     def set_hash(self, card_number: str, plan_hash: str):
         """
-        ✅ ОПТИМИЗАЦИЯ: Сохраняет хеш с проверкой лимита (LRU eviction)
+        Сохраняет хеш с проверкой лимита (LRU eviction)
         """
         # Проверяем лимит размера кеша
         if len(self.data['hashes']) >= self.max_entries:
@@ -269,7 +269,7 @@ class TreatmentPlanSyncManager:
             is_valid, size_kb = TreatmentPlanTransformer.validate_size(plans_data)
             if not is_valid:
                 logger.error(
-                    f"⚠️ Планы превышают 60KB ({size_kb}KB) для карты {card_number} "
+                    f"ВНИМАНИЕ: Планы превышают 60KB ({size_kb}KB) для карты {card_number} "
                     f"- пропускаем"
                 )
                 self.stats['errors'] += 1
@@ -297,7 +297,7 @@ class TreatmentPlanSyncManager:
                 json.loads(plans_json)  # Проверяем что JSON валидный
             except json.JSONDecodeError as e:
                 logger.error(
-                    f"⚠️ Невалидный JSON для карты {card_number}: {e}. "
+                    f"ВНИМАНИЕ: Невалидный JSON для карты {card_number}: {e}. "
                     f"Планы не будут сохранены."
                 )
                 self.stats['errors'] += 1
@@ -315,7 +315,7 @@ class TreatmentPlanSyncManager:
 
             self.stats['updated'] += 1
             logger.info(
-                f"✅ Планы обновлены для сделки {deal_id}: "
+                f"Планы обновлены для сделки {deal_id}: "
                 f"всего={plans_data['total_plans']}, активных={plans_data['active_plans']}, "
                 f"размер={size_kb}KB, hash={new_hash[:8]}..."
             )
@@ -423,7 +423,7 @@ class TreatmentPlanSyncManager:
                     result['updated'] += updated_count
 
                     logger.info(
-                        f"✅ Планы обновлены для {updated_count} сделок (карта {card_number}): "
+                        f"Планы обновлены для {updated_count} сделок (карта {card_number}): "
                         f"всего={plans_data['total_plans']}, активных={plans_data['active_plans']}, "
                         f"размер={size_kb}KB, hash={new_hash[:8]}..."
                     )

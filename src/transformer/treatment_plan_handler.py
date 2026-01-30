@@ -178,7 +178,7 @@ class TreatmentPlanTransformer:
                 stages_dict[stage_id]['name'] = row.get('StageName', '')
                 stages_dict[stage_id]['order'] = row.get('StageOrder', 0)
 
-            # ✅ ИСПРАВЛЕНИЕ: Если элемента нет, создаем виртуальный элемент = этапу
+            # ИСПРАВЛЕНИЕ: Если элемента нет, создаем виртуальный элемент = этапу
             if not element_id:
                 # Используем stage_id как element_id для виртуального элемента
                 element_id = f"stage_{stage_id}"
@@ -251,7 +251,7 @@ class TreatmentPlanTransformer:
         # Логирование для пустых планов
         if total_services == 0:
             logger.info(
-                f"⚠️ План лечения ID={plan_id} пустой (нет услуг). "
+                f"ВНИМАНИЕ: План лечения ID={plan_id} пустой (нет услуг). "
                 f"Пациент: {first_row.get('PatientFullName')}, IsActive={plan['active']}"
             )
 
@@ -440,7 +440,7 @@ def get_treatment_plan_for_patient(
             )
 
             if not is_valid:
-                logger.warning(f"⚠️ План лечения превышает 60KB: {size_kb}KB")
+                logger.warning(f"ВНИМАНИЕ: План лечения превышает 60KB: {size_kb}KB")
 
         return plan
 
