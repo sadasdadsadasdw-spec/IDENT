@@ -409,7 +409,6 @@ class Bitrix24Client:
         return deals
 
     @retry_on_api_error(max_attempts=3)
-    @retry_on_api_error(max_attempts=3)
     def create_deal(self, deal_data: Dict[str, Any], contact_id: int) -> int:
         """
         Создает новую сделку
@@ -528,7 +527,6 @@ class Bitrix24Client:
             logger.error(f"Ошибка обновления сделки {deal_id}: {e}")
             raise
 
-    @retry_on_api_error(max_attempts=3)
     @retry_on_api_error(max_attempts=3)
     def batch_execute(self, commands: Dict[str, str], halt_on_error: bool = False) -> Dict[str, Any]:
         """

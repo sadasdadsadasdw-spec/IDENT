@@ -322,7 +322,10 @@ class SyncOrchestrator:
                             converted_deal = self.b24.get_deal(deal_id)
                             current_stage = converted_deal.get('STAGE_ID') if converted_deal else None
                         except Exception as e:
-                            logger.warning(f"Не удалось получить сделку {deal_id} после конвертации: {e}, обновляем без проверки стадии")
+                            logger.warning(
+                                f"Не удалось получить сделку {deal_id} после конвертации: {e}. "
+                                f"Продолжаем с полным обновлением (сделка только что создана, защита стадий не требуется)"
+                            )
                             current_stage = None
 
                         # Привязываем IDENT ID
@@ -379,8 +382,12 @@ class SyncOrchestrator:
                     existing_deal = self.b24.get_deal(deal_id)
                     current_stage = existing_deal.get('STAGE_ID') if existing_deal else None
                 except Exception as e:
-                    logger.warning(f"Не удалось получить сделку {deal_id}: {e}, обновляем без проверки стадии")
-                    current_stage = None
+                    logger.error(
+                        f"ОШИБКА: Не удалось получить сделку {deal_id} для проверки стадии: {e}. "
+                        f"Риск перезаписи защищенной стадии! Пропускаем обновление для безопасности."
+                    )
+                    # Не обновляем сделку если не можем проверить стадию - безопаснее пропустить
+                    raise Bitrix24Error(f"Не удалось проверить стадию сделки {deal_id} перед обновлением")
 
                 # Привязываем IDENT ID
                 deal_data['uf_crm_ident_id'] = unique_id
