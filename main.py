@@ -602,7 +602,9 @@ class SyncOrchestrator:
             contacts_map = self.b24.batch_find_contacts_by_phones(phones)
 
         with Timer("batch_find_leads"):
-            leads_map = self.b24.batch_find_leads_by_phones(phones)
+            # Передаем найденные контакты для правильного поиска лидов
+            # (filter[PHONE] не работает для лидов с контактами)
+            leads_map = self.b24.batch_find_leads_by_phones(phones, contacts_map)
 
         with Timer("batch_find_deals"):
             deals_map = self.b24.batch_find_deals_by_ident_ids(ident_ids)
