@@ -370,8 +370,34 @@ class SyncOrchestrator:
 
                 logger.info(f"АВТОПРИВЯЗКА: Сделка {deal_id} → {unique_id}")
 
+                # Получаем текущую стадию сделки для применения правил защиты
+                existing_deal = self.b24.get_deal(deal_id)
+                current_stage = existing_deal.get('STAGE_ID') if existing_deal else None
+
+                # Привязываем IDENT ID
                 deal_data['uf_crm_ident_id'] = unique_id
-                self.b24.update_deal(deal_id, deal_data)
+
+                # Применяем правила защиты стадий
+                if StageMapper.is_stage_final(current_stage):
+                    # Финальная стадия - только привязываем ID
+                    logger.warning(
+                        f"Сделка {deal_id} в финальной стадии '{current_stage}' "
+                        f"- обновляем только IDENT ID"
+                    )
+                    self.b24.update_deal(deal_id, {'uf_crm_ident_id': unique_id})
+                elif StageMapper.is_stage_protected(current_stage):
+                    # Защищенная стадия - обновляем без stage_id
+                    logger.info(
+                        f"Сделка {deal_id} в защищенной стадии '{current_stage}' "
+                        f"- обновляем без изменения стадии"
+                    )
+                    deal_data_copy = deal_data.copy()
+                    deal_data_copy.pop('stage_id', None)
+                    self.b24.update_deal(deal_id, deal_data_copy)
+                else:
+                    # Обычная стадия - полное обновление
+                    logger.info(f"Обновлена сделка ID={deal_id}")
+                    self.b24.update_deal(deal_id, deal_data)
 
                 self._sync_treatment_plan(deal_id, deal_data, unique_id)
                 return True
