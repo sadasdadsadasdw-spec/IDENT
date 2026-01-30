@@ -317,9 +317,34 @@ class SyncOrchestrator:
                     deal_id = self.b24.convert_lead(lead_id, contact_from_lead)
 
                     if deal_id:
+                        # Получаем стадию созданной сделки для применения правил защиты
+                        converted_deal = self.b24.get_deal(deal_id)
+                        current_stage = converted_deal.get('STAGE_ID') if converted_deal else None
+
+                        # Привязываем IDENT ID
                         deal_data['uf_crm_ident_id'] = unique_id
-                        self.b24.update_deal(deal_id, deal_data)
-                        logger.info(f"Сделка {deal_id} обновлена после конвертации")
+
+                        # Применяем правила защиты стадий (как для существующих сделок)
+                        if StageMapper.is_stage_final(current_stage):
+                            # Финальная стадия - только привязываем ID
+                            logger.warning(
+                                f"Сделка {deal_id} после конвертации в финальной стадии '{current_stage}' "
+                                f"- обновляем только IDENT ID"
+                            )
+                            self.b24.update_deal(deal_id, {'uf_crm_ident_id': unique_id})
+                        elif StageMapper.is_stage_protected(current_stage):
+                            # Защищенная стадия - обновляем без stage_id
+                            logger.info(
+                                f"Сделка {deal_id} после конвертации в защищенной стадии '{current_stage}' "
+                                f"- обновляем без изменения стадии"
+                            )
+                            deal_data_copy = deal_data.copy()
+                            deal_data_copy.pop('stage_id', None)
+                            self.b24.update_deal(deal_id, deal_data_copy)
+                        else:
+                            # Обычная стадия - полное обновление
+                            logger.info(f"Сделка {deal_id} обновлена после конвертации лида {lead_id}")
+                            self.b24.update_deal(deal_id, deal_data)
 
                         self._sync_treatment_plan(deal_id, deal_data, unique_id)
                         return True
