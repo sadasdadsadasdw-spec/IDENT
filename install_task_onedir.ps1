@@ -33,6 +33,28 @@ if (-not (Test-Path $ExePath)) {
     exit 1
 }
 
+# Check for Visual C++ Redistributable 2015-2022
+Write-Host "Checking Visual C++ Redistributable..." -ForegroundColor Cyan
+$VCRedist = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" -ErrorAction SilentlyContinue
+if (-not $VCRedist -or $VCRedist.Installed -ne 1) {
+    Write-Host "WARNING: Visual C++ Redistributable 2015-2022 (x64) not found!" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "This application requires Visual C++ Redistributable to run." -ForegroundColor Yellow
+    Write-Host "Download: https://aka.ms/vs/17/release/vc_redist.x64.exe" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Without it, the application may fail with:" -ForegroundColor Red
+    Write-Host "  'api-ms-win-crt-runtime-l1-1-0.dll is missing'" -ForegroundColor Red
+    Write-Host ""
+    $Response = Read-Host "Continue anyway? (y/n)"
+    if ($Response -ne 'y') {
+        Write-Host "Install cancelled. Please install Visual C++ Redistributable first." -ForegroundColor Yellow
+        exit 1
+    }
+} else {
+    Write-Host "Visual C++ Redistributable found: v$($VCRedist.Version)" -ForegroundColor Green
+}
+Write-Host ""
+
 # Check if task already exists
 $existingTask = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
 if ($existingTask) {

@@ -375,6 +375,9 @@ class IdentConnector:
             last_sync_time = datetime.now() - timedelta(days=initial_days)
             logger.info(f"Первая синхронизация: загружаем данные за последние {initial_days} дней")
 
+        # DEBUG: Логируем параметры запроса
+        logger.debug(f"SQL фильтр: записи с изменениями >= {last_sync_time}, batch_size={batch_size}")
+
         # ОПТИМИЗИРОВАННЫЙ ЗАПРОС: убран N+1 problem через OUTER APPLY
         query = """
         SELECT TOP (?)
@@ -475,14 +478,14 @@ class IdentConnector:
             ) services_agg
 
         WHERE
-            -- Инкрементальная выборка
+            -- Инкрементальная выборка (>= вместо > для захвата пограничных случаев)
             (
-                r.DateTimeAdded > ?
-                OR r.DateTimeChanged > ?
-                OR r.PatientAppeared > ?
-                OR r.ReceptionStarted > ?
-                OR r.ReceptionEnded > ?
-                OR r.ReceptionCanceled > ?
+                r.DateTimeAdded >= ?
+                OR r.DateTimeChanged >= ?
+                OR r.PatientAppeared >= ?
+                OR r.ReceptionStarted >= ?
+                OR r.ReceptionEnded >= ?
+                OR r.ReceptionCanceled >= ?
             )
 
         ORDER BY r.PlanStart DESC, r.ID DESC
@@ -511,6 +514,15 @@ class IdentConnector:
                         results.extend(dict(zip(columns, row)) for row in rows)
 
                     logger.info(f"Извлечено записей: {len(results)}")
+
+                    # DEBUG: Если записей нет - логируем подробности
+                    if len(results) == 0:
+                        logger.warning(
+                            f"Записей не найдено! Проверьте: "
+                            f"1) Есть ли в БД записи с DateTimeAdded/Changed >= {last_sync_time}. "
+                            f"2) Обновляются ли временные метки при изменении статусов записей."
+                        )
+
                     return results
                 finally:
                     cursor.close()
@@ -558,6 +570,9 @@ class IdentConnector:
         if last_sync_time is None:
             last_sync_time = datetime.now() - timedelta(days=initial_days)
             logger.info(f"Первая синхронизация: загружаем данные за последние {initial_days} дней")
+
+        # DEBUG: Логируем параметры запроса
+        logger.debug(f"SQL фильтр: записи с изменениями >= {last_sync_time}, batch_size={batch_size}")
 
         # Используем тот же запрос что и в get_receptions()
         query = """
@@ -649,12 +664,12 @@ class IdentConnector:
 
         WHERE
             (
-                r.DateTimeAdded > ?
-                OR r.DateTimeChanged > ?
-                OR r.PatientAppeared > ?
-                OR r.ReceptionStarted > ?
-                OR r.ReceptionEnded > ?
-                OR r.ReceptionCanceled > ?
+                r.DateTimeAdded >= ?
+                OR r.DateTimeChanged >= ?
+                OR r.PatientAppeared >= ?
+                OR r.ReceptionStarted >= ?
+                OR r.ReceptionEnded >= ?
+                OR r.ReceptionCanceled >= ?
             )
 
         ORDER BY r.PlanStart DESC, r.ID DESC
@@ -686,6 +701,15 @@ class IdentConnector:
                             yield dict(zip(columns, row))
 
                     logger.info(f"Извлечено записей (генератор): {total_count}")
+
+                    # DEBUG: Если записей нет - логируем подробности
+                    if total_count == 0:
+                        logger.warning(
+                            f"Записей не найдено! Проверьте: "
+                            f"1) Есть ли в БД записи с DateTimeAdded/Changed >= {last_sync_time}. "
+                            f"2) Обновляются ли временные метки при изменении статусов записей. "
+                            f"3) Попробуйте изменить запись в IDENT и сразу запустить синхронизацию."
+                        )
                 finally:
                     cursor.close()
 
