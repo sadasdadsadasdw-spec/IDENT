@@ -1,0 +1,125 @@
+==================================================
+POWERSHELL КОМАНДЫ ДЛЯ ПОИСКА ЛИДА ПО ТЕЛЕФОНУ
+==================================================
+
+ИНСТРУКЦИЯ:
+1. Откройте PowerShell на вашем ПК
+2. Замените YOUR_WEBHOOK_URL и PHONE_NUMBER на реальные значения
+3. Скопируйте и выполните команды по очереди
+
+==================================================
+ШАГ 1: Установите переменные
+==================================================
+
+$WebhookUrl = "YOUR_WEBHOOK_URL"
+$PhoneNumber = "PHONE_NUMBER"
+
+ПРИМЕР:
+$WebhookUrl = "https://myportal.bitrix24.ru/rest/1/abc123def456"
+$PhoneNumber = "+79991234567"
+
+==================================================
+ШАГ 2: ТЕСТ 1 - Обычный поиск crm.lead.list
+==================================================
+
+$Body = @{
+    filter = @{
+        PHONE = $PhoneNumber
+    }
+    select = @("ID", "TITLE", "STATUS_ID", "CONTACT_ID", "PHONE")
+} | ConvertTo-Json -Depth 10
+
+$Response = Invoke-RestMethod -Uri "$WebhookUrl/crm.lead.list" -Method Post -ContentType "application/json" -Body $Body
+
+# Посмотреть результат:
+$Response | ConvertTo-Json -Depth 10
+
+# Проверить найдены ли лиды:
+if ($Response.result) {
+    Write-Host "Найдено лидов: $($Response.result.Count)" -ForegroundColor Green
+    $Response.result | Format-Table ID, TITLE, STATUS_ID, CONTACT_ID
+} else {
+    Write-Host "Лиды не найдены" -ForegroundColor Red
+}
+
+==================================================
+ШАГ 3: ТЕСТ 2 - Batch запрос (как в коде)
+==================================================
+
+# URL-кодируем телефон
+$EncodedPhone = [System.Web.HttpUtility]::UrlEncode($PhoneNumber)
+
+$BatchBody = @{
+    halt = 0
+    cmd = @{
+        $PhoneNumber = "crm.lead.list?filter[PHONE]=$EncodedPhone&select[]=ID&select[]=STATUS_ID&select[]=CONTACT_ID"
+    }
+} | ConvertTo-Json -Depth 10
+
+$BatchResponse = Invoke-RestMethod -Uri "$WebhookUrl/batch" -Method Post -ContentType "application/json" -Body $BatchBody
+
+# Посмотреть результат:
+$BatchResponse | ConvertTo-Json -Depth 10
+
+# Проверить результат batch:
+$LeadData = $BatchResponse.result.result.$PhoneNumber
+if ($LeadData -and $LeadData.Count -gt 0) {
+    Write-Host "Batch нашел лидов: $($LeadData.Count)" -ForegroundColor Green
+    $LeadData | Format-Table ID, STATUS_ID, CONTACT_ID
+} else {
+    Write-Host "Batch не нашел лидов" -ForegroundColor Red
+}
+
+==================================================
+ШАГ 4: ТЕСТ 3 - Получить полные данные лида (если нашли)
+==================================================
+
+# Используйте ID из предыдущих шагов
+$LeadId = "123"  # ЗАМЕНИТЕ на реальный ID
+
+$LeadGetBody = @{
+    id = $LeadId
+} | ConvertTo-Json
+
+$LeadDetails = Invoke-RestMethod -Uri "$WebhookUrl/crm.lead.get" -Method Post -ContentType "application/json" -Body $LeadGetBody
+
+# Посмотреть все данные лида:
+$LeadDetails | ConvertTo-Json -Depth 10
+
+# Проверить телефоны в лиде:
+Write-Host "Телефоны в лиде:"
+$LeadDetails.result.PHONE
+
+# Проверить связанный контакт:
+Write-Host "ID связанного контакта: $($LeadDetails.result.CONTACT_ID)"
+
+==================================================
+УПРОЩЕННАЯ ВЕРСИЯ (одной строкой)
+==================================================
+
+# ТЕСТ 1: Простой запрос
+Invoke-RestMethod -Uri "YOUR_WEBHOOK_URL/crm.lead.list" -Method Post -ContentType "application/json" -Body '{"filter":{"PHONE":"PHONE_NUMBER"},"select":["ID","TITLE","STATUS_ID","CONTACT_ID","PHONE"]}' | ConvertTo-Json -Depth 10
+
+# ТЕСТ 2: Batch запрос (замените %2B на + в номере)
+Invoke-RestMethod -Uri "YOUR_WEBHOOK_URL/batch" -Method Post -ContentType "application/json" -Body '{"halt":0,"cmd":{"PHONE_NUMBER":"crm.lead.list?filter[PHONE]=ENCODED_PHONE&select[]=ID&select[]=STATUS_ID&select[]=CONTACT_ID"}}' | ConvertTo-Json -Depth 10
+
+==================================================
+ПРИМЕРЫ С РЕАЛЬНЫМИ ЗНАЧЕНИЯМИ:
+==================================================
+
+# Замените на ваши данные:
+Invoke-RestMethod -Uri "https://myportal.bitrix24.ru/rest/1/abc123/crm.lead.list" -Method Post -ContentType "application/json" -Body '{"filter":{"PHONE":"+79991234567"},"select":["ID","TITLE","STATUS_ID","CONTACT_ID","PHONE"]}' | ConvertTo-Json -Depth 10
+
+Invoke-RestMethod -Uri "https://myportal.bitrix24.ru/rest/1/abc123/batch" -Method Post -ContentType "application/json" -Body '{"halt":0,"cmd":{"+79991234567":"crm.lead.list?filter[PHONE]=%2B79991234567&select[]=ID&select[]=STATUS_ID&select[]=CONTACT_ID"}}' | ConvertTo-Json -Depth 10
+
+==================================================
+ЧТО ОТПРАВИТЬ МНЕ:
+==================================================
+
+1. Полный вывод команды ТЕСТ 1 или ТЕСТ 2
+2. Если лид найден - вывод ТЕСТА 3 с полными данными
+3. Укажите:
+   - Есть ли CONTACT_ID у лида?
+   - Есть ли PHONE данные в самом лиде?
+
+==================================================
