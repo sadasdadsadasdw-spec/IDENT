@@ -318,8 +318,12 @@ class SyncOrchestrator:
 
                     if deal_id:
                         # Получаем стадию созданной сделки для применения правил защиты
-                        converted_deal = self.b24.get_deal(deal_id)
-                        current_stage = converted_deal.get('STAGE_ID') if converted_deal else None
+                        try:
+                            converted_deal = self.b24.get_deal(deal_id)
+                            current_stage = converted_deal.get('STAGE_ID') if converted_deal else None
+                        except Exception as e:
+                            logger.warning(f"Не удалось получить сделку {deal_id} после конвертации: {e}, обновляем без проверки стадии")
+                            current_stage = None
 
                         # Привязываем IDENT ID
                         deal_data['uf_crm_ident_id'] = unique_id
@@ -371,8 +375,12 @@ class SyncOrchestrator:
                 logger.info(f"АВТОПРИВЯЗКА: Сделка {deal_id} → {unique_id}")
 
                 # Получаем текущую стадию сделки для применения правил защиты
-                existing_deal = self.b24.get_deal(deal_id)
-                current_stage = existing_deal.get('STAGE_ID') if existing_deal else None
+                try:
+                    existing_deal = self.b24.get_deal(deal_id)
+                    current_stage = existing_deal.get('STAGE_ID') if existing_deal else None
+                except Exception as e:
+                    logger.warning(f"Не удалось получить сделку {deal_id}: {e}, обновляем без проверки стадии")
+                    current_stage = None
 
                 # Привязываем IDENT ID
                 deal_data['uf_crm_ident_id'] = unique_id
