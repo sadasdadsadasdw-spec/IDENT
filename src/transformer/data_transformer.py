@@ -201,11 +201,12 @@ class ServicesAggregator:
 class StageMapper:
     """Определение стадии воронки продаж"""
 
-    # Маппинг статусов → стадии (актуальные стадии из Bitrix24)
+    # Маппинг статусов Ident → стадии воронки Bitrix24
     STAGE_MAPPING = {
         'Запланирован': 'NEW',              # Запись на консультацию
-        'Пациент пришел': 'NEW',            # Запись на консультацию
+        'Пациент пришел': 'UC_NO40X0',     # Лечение
         'В процессе': 'UC_NO40X0',          # Лечение
+        'Завершен': 'UC_TXNJY6',            # Лечение завершено
         'Завершен (счет выдан)': 'WON',     # Сделка успешна
         'Отменен': 'LOSE'                   # Сделка провалена
     }
@@ -238,22 +239,18 @@ class StageMapper:
 
         Logic:
             - Если текущая стадия защищена → не меняем
-            - Если статус 'Завершен' (без счета) → сохраняем текущую стадию
-            - Иначе → определяем по статусу
+            - Иначе → определяем по статусу из STAGE_MAPPING
         """
         # Защищаем ручные стадии от автоизменения
         if current_stage and current_stage in StageMapper.PROTECTED_STAGES:
             logger.info(f"Стадия {current_stage} защищена от автоизменения")
             return current_stage
 
-        # Специальная обработка статуса 'Завершен' (без счета)
-        # Лечение завершено, но счет еще не выдан - сохраняем текущую стадию
-        if status == 'Завершен' and current_stage:
-            logger.info(f"Статус 'Завершен' - сохраняем текущую стадию {current_stage}")
-            return current_stage
-
         # Определяем новую стадию
-        new_stage = StageMapper.STAGE_MAPPING.get(status, 'NEW')
+        new_stage = StageMapper.STAGE_MAPPING.get(status.strip() if status else status, None)
+        if new_stage is None:
+            logger.warning(f"Неизвестный статус '{status}' (repr: {status!r}), fallback на NEW")
+            new_stage = 'NEW'
 
         return new_stage
 
