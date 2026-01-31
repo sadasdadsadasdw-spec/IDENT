@@ -284,18 +284,35 @@ class SyncOrchestrator:
                 if StageMapper.is_stage_final(current_stage):
                     logger.info(f"IGNORE: Сделка {deal_id} закрыта (стадия '{current_stage}')")
                 else:
+                    # КРИТИЧНО: Пересчитываем stage_id с учетом текущей стадии
+                    # Это предотвращает откат стадии (например, UC_NO40X0 → NEW)
+                    status_from_ident = deal_data.get('uf_crm_status', 'Запланирован')
+                    correct_stage = StageMapper.get_stage(status_from_ident, current_stage)
+
+                    # Логируем если stage_id изменилась после пересчета
+                    original_stage = deal_data.get('stage_id')
+                    if original_stage != correct_stage:
+                        logger.info(
+                            f"Stage пересчитан: {original_stage} → {correct_stage} "
+                            f"(текущая в Bitrix24: {current_stage}, статус IDENT: '{status_from_ident}')"
+                        )
+                    deal_data['stage_id'] = correct_stage
+
                     if StageMapper.is_stage_protected(current_stage):
-                        logger.info(f"PROTECTED: Сделка {deal_id} в защищенной стадии")
+                        logger.info(f"PROTECTED: Сделка {deal_id} в защищенной стадии '{current_stage}'")
                         deal_data_copy = deal_data.copy()
                         deal_data_copy.pop('stage_id', None)
                         if self.enable_update_existing:
                             self.b24.update_deal(deal_id, deal_data_copy)
                     else:
                         if self.enable_update_existing:
-                            logger.info(f"Обновляем сделку {deal_id}")
+                            if current_stage != correct_stage:
+                                logger.info(f"Обновляем сделку {deal_id}: '{current_stage}' → '{correct_stage}'")
+                            else:
+                                logger.info(f"Обновляем сделку {deal_id} (стадия не изменилась: '{current_stage}')")
                             self.b24.update_deal(deal_id, deal_data)
                         else:
-                            stage_only = {'stage_id': deal_data.get('stage_id')}
+                            stage_only = {'stage_id': correct_stage}
                             if stage_only['stage_id']:
                                 self.b24.update_deal(deal_id, stage_only)
 
