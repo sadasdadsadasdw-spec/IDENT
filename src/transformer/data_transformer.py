@@ -201,12 +201,12 @@ class ServicesAggregator:
 class StageMapper:
     """Определение стадии воронки продаж"""
 
-    # Маппинг статусов → стадии (актуальные стадии из Bitrix24)
+    # Маппинг статусов Ident → стадии воронки Bitrix24
     STAGE_MAPPING = {
         'Запланирован': 'NEW',              # Запись на консультацию
-        'Пациент пришел': 'NEW',            # Запись на консультацию
-        'В процессе': 'UC_NO40X0',          # Лечение (изменено с PREPARATION)
-        'Завершен': 'UC_NO40X0',            # Лечение
+        'Пациент пришел': 'UC_NO40X0',     # Лечение
+        'В процессе': 'UC_NO40X0',          # Лечение
+        'Завершен': 'UC_TXNJY6',            # Лечение завершено
         'Завершен (счет выдан)': 'WON',     # Сделка успешна
         'Отменен': 'LOSE'                   # Сделка провалена
     }
@@ -247,7 +247,10 @@ class StageMapper:
             return current_stage
 
         # Определяем новую стадию
-        new_stage = StageMapper.STAGE_MAPPING.get(status, 'NEW')
+        new_stage = StageMapper.STAGE_MAPPING.get(status.strip() if status else status, None)
+        if new_stage is None:
+            logger.warning(f"Неизвестный статус '{status}' (repr: {status!r}), fallback на NEW")
+            new_stage = 'NEW'
 
         return new_stage
 
